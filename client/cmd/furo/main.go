@@ -165,7 +165,9 @@ func cmdHTTP(args []string) {
 	port := args[0]
 	fs.Parse(args[1:])
 
-	runTunnels(cf, []tunnel.TunnelSpec{{Name: *name, LocalAddr: "127.0.0.1:" + port}})
+	// "localhost" (not 127.0.0.1): dev servers on Node 17+ often bind only
+	// ::1 — Go tries both address families when dialing a hostname.
+	runTunnels(cf, []tunnel.TunnelSpec{{Name: *name, LocalAddr: "localhost:" + port}})
 }
 
 func cmdStart(args []string) {
