@@ -19,6 +19,7 @@ import (
 // TunnelSource is the live-registry view the API needs.
 type TunnelSource interface {
 	ActiveTunnels() []tunnel.Info
+	KillTunnel(username, name string) bool
 }
 
 // CertIssuer is called after a user is created (acme wildcard); may be nil.
@@ -48,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/users/{username}/tokens", s.auth(s.createToken))
 	mux.HandleFunc("POST /api/tokens/revoke", s.auth(s.revokeToken))
 	mux.HandleFunc("GET /api/tunnels", s.auth(s.listTunnels))
+	mux.HandleFunc("DELETE /api/tunnels/{username}/{name}", s.auth(s.killTunnel))
 	mux.Handle("/", http.FileServerFS(webserver.Dist()))
 	return mux
 }
@@ -199,6 +201,15 @@ type tunnelView struct {
 	Name          string `json:"name"`
 	URL           string `json:"url"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+func (s *Server) killTunnel(w http.ResponseWriter, r *http.Request) {
+	username, name := r.PathValue("username"), r.PathValue("name")
+	if !s.tunnels.KillTunnel(username, name) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tunnel not active"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "killed"})
 }
 
 func (s *Server) listTunnels(w http.ResponseWriter, r *http.Request) {

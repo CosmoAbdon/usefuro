@@ -65,6 +65,7 @@ func freePort(t *testing.T) int {
 type proc struct {
 	cmd    *exec.Cmd
 	stdout *lockedBuffer
+	exited chan struct{} // closed when the process is reaped
 }
 
 type lockedBuffer struct {
@@ -95,7 +96,8 @@ func startProc(t *testing.T, bin string, args ...string) *proc {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", bin, err)
 	}
-	p := &proc{cmd: cmd, stdout: out}
+	p := &proc{cmd: cmd, stdout: out, exited: make(chan struct{})}
+	go func() { cmd.Wait(); close(p.exited) }()
 	t.Cleanup(func() { p.kill() })
 	return p
 }
@@ -103,7 +105,7 @@ func startProc(t *testing.T, bin string, args ...string) *proc {
 func (p *proc) kill() {
 	if p.cmd.Process != nil {
 		p.cmd.Process.Kill()
-		p.cmd.Wait()
+		<-p.exited
 	}
 }
 
