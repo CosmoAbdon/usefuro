@@ -137,6 +137,24 @@ WantedBy=multi-user.target
 </details>
 
 <details>
+<summary><b>Observability (Prometheus + Grafana)</b></summary>
+
+Off by default. Enable with `metrics_port: 9091` in config.yml (or `--metrics-port 9091`); `0` disables. The endpoint is plain HTTP with no auth — bind-scope or firewall it (it should never be the public port).
+
+```yaml
+# prometheus scrape config
+scrape_configs:
+  - job_name: furo
+    static_configs:
+      - targets: ["your-server:9091"]
+```
+
+Key series: `furo_tunnels_active{username}`, `furo_sessions_active`, `furo_http_requests_total{username,status_class}`, `furo_http_request_duration_seconds` (histogram), `furo_http_errors_total{reason}`, `furo_public_bytes_total{direction}`, `furo_upgrades_active`, `furo_auth_total{outcome}`, `furo_heartbeat_timeouts_total` — plus the standard Go/process collectors. Labels never carry tunnel names (unbounded); usernames only.
+
+Ready-made dashboard: import [`deploy/grafana/furo-dashboard.json`](deploy/grafana/furo-dashboard.json) (tunnels/sessions stats, request rate by status class, p50/p95/p99 latency, per-user rate, proxy errors, traffic, runtime).
+</details>
+
+<details>
 <summary><b>Backups (Litestream)</b></summary>
 
 State lives in one SQLite file: `<data_dir>/furo.db` (users, token hashes — active tunnels are memory-only). Stream it to S3-compatible storage with [Litestream](https://litestream.io):

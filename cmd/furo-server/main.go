@@ -16,6 +16,7 @@ import (
 	"github.com/cosmoabdon/usefuro/internal/selfupdate"
 	"github.com/cosmoabdon/usefuro/internal/server/api"
 	"github.com/cosmoabdon/usefuro/internal/server/config"
+	"github.com/cosmoabdon/usefuro/internal/server/metrics"
 	"github.com/cosmoabdon/usefuro/internal/server/store"
 	"github.com/cosmoabdon/usefuro/internal/server/tlsmgr"
 	"github.com/cosmoabdon/usefuro/internal/server/tunnel"
@@ -125,6 +126,7 @@ func cmdInit(args []string) {
 	cfg.HTTPPort = askInt(ask, "public HTTPS port", 443)
 	cfg.AdminToken = ask("admin token for the web UI (tip: ${FURO_ADMIN_TOKEN})", "${FURO_ADMIN_TOKEN}")
 	cfg.DataDir = ask("data directory (sqlite + certs)", "/var/lib/furo")
+	cfg.MetricsPort = askInt(ask, "prometheus metrics port (0 = disabled)", 0)
 
 	if err := cfg.Validate(); err != nil {
 		// ${VAR} placeholders are fine at init time; only structural errors matter.
@@ -190,11 +192,15 @@ func cmdServe(args []string) {
 	pingInterval := fs.Duration("ping-interval", 30*time.Second, "heartbeat ping interval")
 	pongTimeout := fs.Duration("pong-timeout", 90*time.Second, "drop session after this long without a pong")
 	adminToken := fs.String("admin-token", "", "admin token for the web UI/API (overrides config)")
+	metricsPort := fs.Int("metrics-port", -1, "Prometheus /metrics port; 0 disables (overrides config)")
 	fs.Parse(args)
 
 	cfg := loadConfig(fs, *configPath)
 	if *adminToken != "" {
 		cfg.AdminToken = *adminToken
+	}
+	if *metricsPort >= 0 {
+		cfg.MetricsPort = *metricsPort
 	}
 	if *controlAddr == "" {
 		*controlAddr = fmt.Sprintf(":%d", cfg.ControlPort)
@@ -206,6 +212,15 @@ func cmdServe(args []string) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	st := openStore(cfg.DataDir)
 	defer st.Close()
+
+	if cfg.MetricsPort > 0 {
+		ln, err := metrics.Start(fmt.Sprintf(":%d", cfg.MetricsPort))
+		if err != nil {
+			fatal(err)
+		}
+		defer ln.Close()
+		log.Info("prometheus metrics enabled", "addr", ln.Addr().String(), "path", "/metrics")
+	}
 
 	mgr, err := tlsmgr.New(cfg)
 	if err != nil {

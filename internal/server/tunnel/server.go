@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/cosmoabdon/usefuro/internal/proto"
+	"github.com/cosmoabdon/usefuro/internal/server/metrics"
 	"github.com/cosmoabdon/usefuro/internal/server/names"
 )
 
@@ -273,9 +274,13 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	}
 	username, err := s.cfg.Authenticate(msg.Token)
 	if err != nil {
+		metrics.AuthTotal.WithLabelValues("invalid_token").Inc()
 		w.send(proto.Message{Type: proto.TypeAuthErr, Reason: "invalid_token"})
 		return
 	}
+	metrics.AuthTotal.WithLabelValues("ok").Inc()
+	metrics.SessionsActive.Inc()
+	defer metrics.SessionsActive.Dec()
 	w.send(proto.Message{Type: proto.TypeAuthOK, Username: username})
 	s.log.Info("client authenticated", "username", username, "remote", conn.RemoteAddr())
 	if s.cfg.OnUserAuth != nil {
@@ -309,6 +314,7 @@ func (s *Server) handleControlConn(conn net.Conn) {
 				silent := time.Since(lastPong)
 				pongMu.Unlock()
 				if silent > s.cfg.PongTimeout {
+					metrics.HeartbeatTimeouts.Inc()
 					s.log.Warn("heartbeat timeout, closing session", "username", username)
 					sess.Close()
 					return
@@ -352,6 +358,7 @@ func (s *Server) register(w *ctlWriter, sess *yamux.Session, username string, ms
 	name := msg.Name
 	generated := name == ""
 	if !generated && !names.Valid(name) {
+		metrics.RegistrationsTotal.WithLabelValues("invalid_name").Inc()
 		w.send(proto.Message{Type: proto.TypeRegisterErr, Name: name, Reason: "invalid_name"})
 		return
 	}
@@ -366,12 +373,15 @@ func (s *Server) register(w *ctlWriter, sess *yamux.Session, username string, ms
 		}
 	} else if _, taken := s.tunnels[username+"/"+name]; taken {
 		s.mu.Unlock()
+		metrics.RegistrationsTotal.WithLabelValues("name_taken").Inc()
 		w.send(proto.Message{Type: proto.TypeRegisterErr, Name: name, Reason: "name_taken"})
 		return
 	}
 	id := "t_" + randHex(8)
 	s.tunnels[username+"/"+name] = &tunnelEntry{id: id, username: username, name: name, sess: sess, since: time.Now()}
 	s.mu.Unlock()
+	metrics.RegistrationsTotal.WithLabelValues("ok").Inc()
+	metrics.TunnelsActive.WithLabelValues(username).Inc()
 
 	url := fmt.Sprintf("%s://%s.%s.%s", s.scheme(), name, username, s.cfg.BaseDomain)
 	w.send(proto.Message{Type: proto.TypeRegistered, TunnelID: id, Name: name, URL: url})
@@ -384,6 +394,7 @@ func (s *Server) unregisterSession(sess *yamux.Session) {
 	for key, t := range s.tunnels {
 		if t.sess == sess {
 			delete(s.tunnels, key)
+			metrics.TunnelsActive.WithLabelValues(t.username).Dec()
 			s.log.Info("tunnel unregistered", "id", t.id, "name", t.name)
 		}
 	}
@@ -395,6 +406,7 @@ func (s *Server) unregisterByID(id string) {
 	for key, t := range s.tunnels {
 		if t.id == id {
 			delete(s.tunnels, key)
+			metrics.TunnelsActive.WithLabelValues(t.username).Dec()
 			s.log.Info("tunnel unregistered", "id", t.id, "name", t.name)
 		}
 	}
@@ -417,6 +429,8 @@ func (s *Server) KillTunnel(username, name string) bool {
 	if w != nil {
 		w.send(proto.Message{Type: proto.TypeUnregistered, TunnelID: t.id, Name: name, Reason: "closed_by_admin"})
 	}
+	metrics.TunnelsActive.WithLabelValues(username).Dec()
+	metrics.TunnelsKilled.Inc()
 	s.log.Info("tunnel killed by admin", "id", t.id, "name", name, "username", username)
 	return true
 }
@@ -439,9 +453,27 @@ func (s *Server) ActiveTunnels() []Info {
 
 // ---- public HTTP side ----
 
-func (s *Server) handlePublicConn(conn net.Conn) {
+// countingConn feeds the public byte counters as traffic flows.
+type countingConn struct {
+	net.Conn
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	metrics.BytesTotal.WithLabelValues("in").Add(float64(n))
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	metrics.BytesTotal.WithLabelValues("out").Add(float64(n))
+	return n, err
+}
+
+func (s *Server) handlePublicConn(rawConn net.Conn) {
 	s.publicConns.Add(1)
 	defer s.publicConns.Done()
+	conn := net.Conn(&countingConn{rawConn})
 	defer conn.Close()
 	br := bufio.NewReader(conn)
 	for {
@@ -449,6 +481,7 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		start := time.Now()
 		if s.isAdminHost(req.Host) {
 			if !s.serveAdmin(conn, req) {
 				return
@@ -457,12 +490,14 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 		}
 		t := s.lookup(req.Host)
 		if t == nil {
+			metrics.ErrorsTotal.WithLabelValues("tunnel_offline").Inc()
 			writeSimpleResponse(conn, 404, "tunnel offline")
 			return
 		}
 
 		stream, err := t.sess.OpenStream()
 		if err != nil {
+			metrics.ErrorsTotal.WithLabelValues("tunnel_unavailable").Inc()
 			writeSimpleResponse(conn, 502, "tunnel unavailable")
 			return
 		}
@@ -479,7 +514,11 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 		req.Header.Set("X-Forwarded-Host", req.Host)
 
 		if isUpgrade(req) {
+			metrics.UpgradesTotal.Inc()
+			metrics.UpgradesActive.Inc()
 			s.proxyUpgrade(conn, br, stream, req)
+			metrics.UpgradesActive.Dec()
+			metrics.RequestsTotal.WithLabelValues(t.username, "1xx").Inc()
 			return
 		}
 
@@ -490,12 +529,17 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 		resp, err := http.ReadResponse(bufio.NewReader(stream), req)
 		if err != nil {
 			stream.Close()
+			metrics.ErrorsTotal.WithLabelValues("bad_gateway").Inc()
+			metrics.RequestsTotal.WithLabelValues(t.username, "err").Inc()
 			writeSimpleResponse(conn, 502, "bad gateway")
 			return
 		}
 		err = resp.Write(conn) // streams the body; never buffers it whole
 		resp.Body.Close()
 		stream.Close()
+		class := metrics.StatusClass(resp.StatusCode)
+		metrics.RequestsTotal.WithLabelValues(t.username, class).Inc()
+		metrics.RequestDuration.WithLabelValues(class).Observe(time.Since(start).Seconds())
 		if err != nil || resp.Close || req.Close {
 			return
 		}
