@@ -57,11 +57,12 @@ type Config struct {
 
 // tunnelState carries a spec plus what the server assigned to it.
 type tunnelState struct {
-	spec  TunnelSpec
-	name  string // assigned name (server echo), stable across reconnects
-	id    string // tunnel_id of the current session
-	url   string
-	since time.Time
+	spec    TunnelSpec
+	name    string // assigned name (server echo), stable across reconnects
+	id      string // tunnel_id of the current session
+	url     string
+	since   time.Time
+	removed bool // killed by the server (admin); never re-register
 }
 
 type Client struct {
@@ -115,11 +116,25 @@ func (c *Client) Status() []TunnelStatus {
 	}
 	out := make([]TunnelStatus, 0, len(c.states))
 	for _, st := range c.states {
+		if st.removed {
+			continue
+		}
 		out = append(out, TunnelStatus{
 			Name: st.name, URL: st.url, LocalAddr: st.spec.LocalAddr, Since: st.since,
 		})
 	}
 	return out
+}
+
+// remaining counts tunnels not killed by the server. Callers hold c.mu.
+func (c *Client) remainingLocked() int {
+	n := 0
+	for _, st := range c.states {
+		if !st.removed {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *Client) dial() (net.Conn, error) {
@@ -165,7 +180,9 @@ func (c *Client) connectOnce(first bool) error {
 	}
 	defer conn.Close()
 
-	sess, err := yamux.Client(conn, nil)
+	ycfg := yamux.DefaultConfig()
+	ycfg.LogOutput = io.Discard
+	sess, err := yamux.Client(conn, ycfg)
 	if err != nil {
 		return fmt.Errorf("yamux: %w", err)
 	}
@@ -192,7 +209,17 @@ func (c *Client) connectOnce(first bool) error {
 	c.byID = map[string]*tunnelState{}
 	c.mu.Unlock()
 
+	c.mu.Lock()
+	if c.remainingLocked() == 0 {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: all tunnels were closed by the server admin", errPermanent)
+	}
+	c.mu.Unlock()
+
 	for _, st := range c.states {
+		if st.removed {
+			continue
+		}
 		enc.Encode(proto.Message{Type: proto.TypeRegister, Proto: "http", Name: st.name, Local: st.spec.LocalAddr})
 		msg, err = readMsg(sc)
 		if err != nil {
@@ -225,15 +252,28 @@ func (c *Client) connectOnce(first bool) error {
 		c.mu.Unlock()
 	}()
 
-	// Control reader: answer pings.
+	// Control reader: answer pings, honor admin kicks.
 	go func() {
 		for {
 			m, err := readMsg(sc)
 			if err != nil {
 				return
 			}
-			if m.Type == proto.TypePing {
+			switch m.Type {
+			case proto.TypePing:
 				enc.Encode(proto.Message{Type: proto.TypePong, TS: m.TS})
+			case proto.TypeUnregistered:
+				c.mu.Lock()
+				if st := c.byID[m.TunnelID]; st != nil {
+					st.removed = true
+					delete(c.byID, m.TunnelID)
+				}
+				left := c.remainingLocked()
+				c.mu.Unlock()
+				c.log.Warn("tunnel closed by server", "name", m.Name, "reason", m.Reason)
+				if left == 0 {
+					sess.Close() // unblocks AcceptStream; Run exits permanently
+				}
 			}
 		}
 	}()

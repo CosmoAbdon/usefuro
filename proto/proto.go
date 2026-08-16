@@ -35,8 +35,11 @@ const (
 	TypeRegistered  = "registered"
 	TypeRegisterErr = "register_err"
 	TypeUnregister  = "unregister"
-	TypePing        = "ping"
-	TypePong        = "pong"
+	// TypeUnregistered is sent server → client when a tunnel is removed on
+	// the server side (e.g. admin kick); the client must not re-register it.
+	TypeUnregistered = "unregistered"
+	TypePing         = "ping"
+	TypePong         = "pong"
 )
 
 // DataHeader is the single JSON line the server writes at the start of every

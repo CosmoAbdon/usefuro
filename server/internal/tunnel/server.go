@@ -48,8 +48,9 @@ type Server struct {
 	cfg Config
 	log *slog.Logger
 
-	mu      sync.Mutex
-	tunnels map[string]*tunnelEntry // key: username + "/" + name
+	mu          sync.Mutex
+	tunnels     map[string]*tunnelEntry // key: username + "/" + name
+	sessWriters map[*yamux.Session]*ctlWriter
 
 	controlLn net.Listener
 	httpLn    net.Listener
@@ -103,7 +104,11 @@ func New(cfg Config) *Server {
 	if cfg.PongTimeout == 0 {
 		cfg.PongTimeout = 90 * time.Second
 	}
-	return &Server{cfg: cfg, log: cfg.Log, tunnels: make(map[string]*tunnelEntry)}
+	return &Server{
+		cfg: cfg, log: cfg.Log,
+		tunnels:     make(map[string]*tunnelEntry),
+		sessWriters: make(map[*yamux.Session]*ctlWriter),
+	}
 }
 
 // Start binds both listeners and serves in background goroutines.
@@ -203,9 +208,41 @@ func (w *ctlWriter) send(m proto.Message) error {
 	return w.enc.Encode(m)
 }
 
+// bufConn lets us peek at the first bytes before handing off to yamux.
+type bufConn struct {
+	br *bufio.Reader
+	net.Conn
+}
+
+func (c *bufConn) Read(p []byte) (int, error) { return c.br.Read(p) }
+
+var httpMethods = []string{"GET ", "POST ", "HEAD ", "PUT ", "DELETE", "OPTIONS", "PATCH", "CONNECT", "TRACE"}
+
+func looksLikeHTTP(b []byte) bool {
+	for _, m := range httpMethods {
+		n := min(len(m), len(b))
+		if string(b[:n]) == m[:n] {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleControlConn(conn net.Conn) {
 	defer conn.Close()
-	sess, err := yamux.Server(conn, nil)
+
+	// Browsers/probes hitting the control port with HTTP get a clear answer
+	// instead of yamux protocol-version noise.
+	pk := bufio.NewReader(conn)
+	if first, err := pk.Peek(4); err == nil && looksLikeHTTP(first) {
+		body := "this is the furo control port (for furo clients) — the HTTP endpoint is on the public port"
+		fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+		return
+	}
+
+	ycfg := yamux.DefaultConfig()
+	ycfg.LogOutput = io.Discard
+	sess, err := yamux.Server(&bufConn{br: pk, Conn: conn}, ycfg)
 	if err != nil {
 		s.log.Error("yamux server", "err", err)
 		return
@@ -234,6 +271,14 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	w.send(proto.Message{Type: proto.TypeAuthOK, Username: username})
 	s.log.Info("client authenticated", "username", username, "remote", conn.RemoteAddr())
 
+	s.mu.Lock()
+	s.sessWriters[sess] = w
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.sessWriters, sess)
+		s.mu.Unlock()
+	}()
 	defer s.unregisterSession(sess)
 
 	// Heartbeat.
@@ -342,6 +387,27 @@ func (s *Server) unregisterByID(id string) {
 			s.log.Info("tunnel unregistered", "id", t.id, "name", t.name)
 		}
 	}
+}
+
+// KillTunnel removes an active tunnel and tells its client not to
+// re-register it. Returns false when the tunnel is not active.
+func (s *Server) KillTunnel(username, name string) bool {
+	key := username + "/" + name
+	s.mu.Lock()
+	t := s.tunnels[key]
+	if t == nil {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.tunnels, key)
+	w := s.sessWriters[t.sess]
+	s.mu.Unlock()
+
+	if w != nil {
+		w.send(proto.Message{Type: proto.TypeUnregistered, TunnelID: t.id, Name: name, Reason: "closed_by_admin"})
+	}
+	s.log.Info("tunnel killed by admin", "id", t.id, "name", name, "username", username)
+	return true
 }
 
 // ActiveTunnels returns a snapshot of the registry for the admin API.

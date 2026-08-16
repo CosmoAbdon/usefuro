@@ -246,12 +246,18 @@ function UsersTab({ api }: { api: Api }) {
 
 function TunnelsTab({ api }: { api: Api }) {
   const [tunnels, setTunnels] = useState<TunnelView[]>([])
+  const load = useCallback(() => api<TunnelView[]>('/api/tunnels').then(setTunnels).catch(() => {}), [api])
   useEffect(() => {
-    const load = () => api<TunnelView[]>('/api/tunnels').then(setTunnels).catch(() => {})
     load()
     const iv = setInterval(load, 5000)
     return () => clearInterval(iv)
-  }, [api])
+  }, [load])
+
+  const kill = async (t: TunnelView) => {
+    if (!confirm(`kill tunnel ${t.name} (${t.username})? The client will NOT re-register it.`)) return
+    await api(`/api/tunnels/${t.username}/${t.name}`, { method: 'DELETE' })
+    load()
+  }
 
   if (tunnels.length === 0)
     return <div className="text-zinc-600 text-sm text-center py-10">no active tunnels</div>
@@ -263,6 +269,7 @@ function TunnelsTab({ api }: { api: Api }) {
           <th className="py-2 px-2 font-medium">name</th>
           <th className="py-2 px-2 font-medium">url</th>
           <th className="py-2 px-2 font-medium">uptime</th>
+          <th className="py-2 px-2" />
         </tr>
       </thead>
       <tbody>
@@ -276,6 +283,11 @@ function TunnelsTab({ api }: { api: Api }) {
               </a>
             </td>
             <td className="py-2 px-2 text-zinc-400">{fmtUptime(t.uptime_seconds)}</td>
+            <td className="py-2 px-2 text-right">
+              <button onClick={() => kill(t)} className="text-xs px-2 py-1 rounded bg-zinc-800 hover:bg-rose-900/70 hover:text-rose-200">
+                kill
+              </button>
+            </td>
           </tr>
         ))}
       </tbody>
