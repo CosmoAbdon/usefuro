@@ -13,7 +13,7 @@ import (
 	"github.com/libdns/gandi"
 	"github.com/libdns/hetzner"
 
-	"github.com/cosmoabdon/furo/server/internal/config"
+	"github.com/cosmoabdon/usefuro/server/internal/config"
 )
 
 // acmeManager issues wildcards via Let's Encrypt DNS-01 (certmagic + libdns).

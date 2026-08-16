@@ -20,8 +20,8 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/cosmoabdon/furo/proto"
-	"github.com/cosmoabdon/furo/server/internal/names"
+	"github.com/cosmoabdon/usefuro/proto"
+	"github.com/cosmoabdon/usefuro/server/internal/names"
 )
 
 type Config struct {

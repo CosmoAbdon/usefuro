@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cosmoabdon/furo/server/internal/store"
-	"github.com/cosmoabdon/furo/server/internal/tunnel"
-	webserver "github.com/cosmoabdon/furo/web-server"
+	"github.com/cosmoabdon/usefuro/server/internal/store"
+	"github.com/cosmoabdon/usefuro/server/internal/tunnel"
+	webserver "github.com/cosmoabdon/usefuro/web-server"
 )
 
 // TunnelSource is the live-registry view the API needs.

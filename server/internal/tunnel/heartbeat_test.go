@@ -9,7 +9,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/cosmoabdon/furo/proto"
+	"github.com/cosmoabdon/usefuro/proto"
 )
 
 // A client that authenticates and registers but never answers pings must be

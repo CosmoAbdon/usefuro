@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/cosmoabdon/furo/client/internal/tunnel"
+	"github.com/cosmoabdon/usefuro/client/internal/tunnel"
 )
 
 // TunnelFile is the furo.yml format (compose-style):

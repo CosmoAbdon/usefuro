@@ -7,7 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 
-	"github.com/cosmoabdon/furo/server/internal/config"
+	"github.com/cosmoabdon/usefuro/server/internal/config"
 )
 
 // Manager hands out certs for the control and public listeners and emits
