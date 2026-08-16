@@ -1,0 +1,15 @@
+# binaries (root-anchored so cmd/furo* source dirs are not ignored)
+/bin/
+/dist/
+/furo
+/furo-server
+
+# data
+*.db
+*.sqlite
+
+# frontend
+node_modules/
+
+# misc
+.DS_Store
