@@ -110,7 +110,7 @@ func cmdInit(args []string) {
 	cfg.TLS = ask("tls mode (off | self-signed | acme)", config.TLSACME)
 	if cfg.TLS == config.TLSACME {
 		cfg.ACMEEmail = ask("ACME e-mail (Let's Encrypt)", "")
-		cfg.DNSProvider = ask("DNS provider (cloudflare)", "cloudflare")
+		cfg.DNSProvider = ask(fmt.Sprintf("DNS provider %v", tlsmgr.SupportedDNSProviders), "cloudflare")
 		cfg.DNSToken = ask("DNS API token (tip: use ${FURO_DNS_TOKEN} and export it)", "${FURO_DNS_TOKEN}")
 	}
 	cfg.ControlPort = askInt(ask, "control port", cfg.ControlPort)

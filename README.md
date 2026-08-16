@@ -52,7 +52,7 @@ FURO_DNS_TOKEN=... FURO_ADMIN_TOKEN=... docker compose up -d
 ```yaml
 base_domain: tunnel.example.com
 acme_email: you@example.com
-dns_provider: cloudflare        # libdns provider
+dns_provider: cloudflare        # cloudflare | digitalocean | hetzner | gandi | desec
 dns_token: ${FURO_DNS_TOKEN}
 tls: acme                       # off | self-signed | acme
 control_port: 7835
@@ -69,7 +69,22 @@ data_dir: /var/lib/furo         # sqlite + certs
 
 furo login furo_...  --server control.tunnel.example.com:7835   # once
 furo http 3000 --name web                                       # tunnel up
+furo status                                                     # all tunnels on this machine
 ```
+
+Multiple tunnels from one file (`furo start`, compose-style `furo.yml`):
+
+```yaml
+tunnels:
+  api:
+    proto: http
+    port: 3003
+    name: api-orbium
+  web:
+    port: 3000        # no name → server-generated
+```
+
+All tunnels of a process share one multiplexed connection and one inspector.
 
 - `--name` optional — without it the server assigns a random `web7k2a`-style name.
 - The tunnel URL is stable across reconnects; the client reconnects automatically with backoff and re-registers.
@@ -97,7 +112,11 @@ furo-server token  add <username> [--label X] | ls <username> | revoke <hash-pre
 
 furo login <token> [--server addr] [--ca file] [--insecure] [--plaintext]
 furo http <port>   [--name X] [--inspector-port N] [--no-inspector] [...]
+furo start         [--file furo.yml] [...]         all tunnels from furo.yml
+furo status        [--inspector-port N]            tunnels of every local furo process
 ```
+
+More DNS providers: anything implementing [libdns](https://github.com/libdns) works — add the import and one case in `server/internal/tlsmgr/acme.go`.
 
 ## Backups (Litestream)
 

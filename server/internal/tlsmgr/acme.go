@@ -8,6 +8,10 @@ import (
 
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/cloudflare"
+	"github.com/libdns/desec"
+	"github.com/libdns/digitalocean"
+	"github.com/libdns/gandi"
+	"github.com/libdns/hetzner"
 
 	"github.com/cosmoabdon/furo/server/internal/config"
 )
@@ -18,14 +22,27 @@ type acmeManager struct {
 	base  string
 }
 
-// dnsProvider resolves a libdns provider by name. Cloudflare ships in v1;
-// adding another provider is one import + one case here.
+// SupportedDNSProviders lists the compiled-in libdns providers. The
+// architecture is provider-agnostic (anything implementing libdns works);
+// Go links statically, so each one costs an import + a case here.
+var SupportedDNSProviders = []string{"cloudflare", "digitalocean", "hetzner", "gandi", "desec"}
+
+// dnsProvider resolves a libdns provider by name. All supported providers
+// authenticate with a single API token (config dns_token).
 func dnsProvider(name, token string) (certmagic.DNSProvider, error) {
 	switch name {
 	case "cloudflare":
 		return &cloudflare.Provider{APIToken: token}, nil
+	case "digitalocean":
+		return &digitalocean.Provider{APIToken: token}, nil
+	case "hetzner":
+		return &hetzner.Provider{AuthAPIToken: token}, nil
+	case "gandi":
+		return &gandi.Provider{BearerToken: token}, nil
+	case "desec":
+		return &desec.Provider{Token: token}, nil
 	default:
-		return nil, fmt.Errorf("unsupported dns_provider %q (supported: cloudflare)", name)
+		return nil, fmt.Errorf("unsupported dns_provider %q (supported: %v)", name, SupportedDNSProviders)
 	}
 }
 

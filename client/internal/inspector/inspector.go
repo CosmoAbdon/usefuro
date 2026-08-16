@@ -12,37 +12,43 @@ import (
 	"strings"
 
 	"github.com/cosmoabdon/furo/client/internal/proxy"
+	"github.com/cosmoabdon/furo/client/internal/tunnel"
 	webinspector "github.com/cosmoabdon/furo/web-inspector"
 )
 
-// portAttempts limits the auto-increment search (4040, 4041, ...).
-const portAttempts = 20
+// PortAttempts limits the auto-increment search (4040, 4041, ...). Exported
+// so `furo status` scans the same range.
+const PortAttempts = 20
+
+// StatusFunc reports the live tunnels of this process (furo status).
+type StatusFunc func() []tunnel.TunnelStatus
 
 type Server struct {
-	ring *proxy.Ring
-	log  *slog.Logger
-	ln   net.Listener
+	ring   *proxy.Ring
+	status StatusFunc
+	log    *slog.Logger
+	ln     net.Listener
 }
 
-func New(ring *proxy.Ring, log *slog.Logger) *Server {
+func New(ring *proxy.Ring, status StatusFunc, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{ring: ring, log: log}
+	return &Server{ring: ring, status: status, log: log}
 }
 
 // Start listens on the first free port from basePort up and serves in the
 // background. Returns the URL to print (http://localhost:<port>).
 func (s *Server) Start(basePort int) (string, error) {
 	var err error
-	for port := basePort; port < basePort+portAttempts; port++ {
+	for port := basePort; port < basePort+PortAttempts; port++ {
 		s.ln, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
 			go http.Serve(s.ln, s.handler())
 			return fmt.Sprintf("http://localhost:%d", port), nil
 		}
 	}
-	return "", fmt.Errorf("no free inspector port in %d-%d: %w", basePort, basePort+portAttempts-1, err)
+	return "", fmt.Errorf("no free inspector port in %d-%d: %w", basePort, basePort+PortAttempts-1, err)
 }
 
 func (s *Server) Close() error {
@@ -59,8 +65,18 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("POST /api/replay/{id}", s.handleReplay)
 	mux.HandleFunc("POST /api/clear", s.handleClear)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.Handle("/", http.FileServerFS(webinspector.Dist()))
 	return mux
+}
+
+// handleStatus identifies this furo process for `furo status`.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	tunnels := []tunnel.TunnelStatus{}
+	if s.status != nil {
+		tunnels = s.status()
+	}
+	writeJSON(w, map[string]any{"app": "furo", "tunnels": tunnels})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
