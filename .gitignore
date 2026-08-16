@@ -13,3 +13,8 @@ node_modules/
 
 # misc
 .DS_Store
+
+# sqlite sidecars + local dev data dir
+*.db-shm
+*.db-wal
+/data/
