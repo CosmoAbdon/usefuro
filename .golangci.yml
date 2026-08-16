@@ -1,0 +1,51 @@
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - misspell
+    - unconvert
+    - unparam
+    - nilerr
+    - bodyclose
+  settings:
+    errcheck:
+      # Best-effort calls whose failure is handled by the surrounding
+      # protocol (connection teardown, process exit) — checking would only
+      # add noise.
+      exclude-functions:
+        - (*encoding/json.Encoder).Encode
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - io.Copy
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - net/http.Serve
+        - (*flag.FlagSet).Parse # all our FlagSets use flag.ExitOnError
+        - os.Remove
+        - (net.Conn).SetDeadline
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*github.com/hashicorp/yamux.Session).Close
+        - (*github.com/hashicorp/yamux.Stream).Close
+        - (*github.com/cosmoabdon/usefuro/internal/server/store.Store).Close
+        - (*github.com/cosmoabdon/usefuro/internal/server/tunnel.Server).Close
+        - (*github.com/cosmoabdon/usefuro/internal/server/tunnel.chanListener).Close
+        # control-stream sends are best-effort: a failed send means the
+        # session is dying and the heartbeat/teardown path handles it
+        - (*github.com/cosmoabdon/usefuro/internal/server/tunnel.ctlWriter).send
+        # cappedBuffer.Write never returns an error by design
+        - (*github.com/cosmoabdon/usefuro/internal/client/proxy.cappedBuffer).Write
+        - (*github.com/cosmoabdon/usefuro/internal/client/inspector.Server).Close
+  exclusions:
+    rules:
+      # Tests are intentionally best-effort about cleanup errors, and the
+      # e2e helpers close bodies inside (bodyclose cannot see through them).
+      - path: _test\.go
+        linters: [errcheck, bodyclose]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

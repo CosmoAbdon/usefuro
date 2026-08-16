@@ -15,7 +15,11 @@ jobs:
           go-version: "1.26"
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: vet
-        run: go vet ./...
+      - name: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
       - name: test
         run: go test ./... -count=1
+      - name: fuzz smoke (public HTTP parser)
+        run: go test -fuzz=FuzzPublicConn -fuzztime=20s ./internal/server/tunnel/

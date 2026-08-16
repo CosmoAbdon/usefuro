@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh 
 irm https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.ps1 | iex
 
 # or build from source
-go install github.com/cosmoabdon/usefuro/client/cmd/furo@latest
+go install github.com/cosmoabdon/usefuro/cmd/furo@latest
 ```
 
 Update any time with `furo update`.
@@ -101,7 +101,7 @@ admin_token: ${FURO_ADMIN_TOKEN}
 data_dir: /var/lib/furo         # sqlite + certs
 ```
 
-Any other [libdns](https://github.com/libdns) provider works — add the import and one case in `server/internal/tlsmgr/acme.go`.
+Any other [libdns](https://github.com/libdns) provider works — add the import and one case in `internal/server/tlsmgr/acme.go`.
 </details>
 
 <details>
@@ -173,9 +173,9 @@ furo-server update                                 self-update to the latest rel
 ## Dev mode (no domain, no TLS)
 
 ```bash
-go run ./server/cmd/furo-server user add alice
-go run ./server/cmd/furo-server serve                 # tls off without config.yml
-go run ./client/cmd/furo http 3000 --name test --token furo_... --plaintext
+go run ./cmd/furo-server user add alice
+go run ./cmd/furo-server serve                 # tls off without config.yml
+go run ./cmd/furo http 3000 --name test --token furo_... --plaintext
 curl -H 'Host: test.alice.localhost' http://127.0.0.1:8080/
 ```
 
@@ -185,11 +185,18 @@ curl -H 'Host: test.alice.localhost' http://127.0.0.1:8080/
 
 ```
 repo/
-├── server/           Go — furo-server (control listener, Host routing, REST API, TLS via certmagic)
-├── client/           Go — furo (persistent yamux session, capture proxy, inspector)
-├── proto/            Control-protocol message types (NDJSON over yamux stream 0)
-├── web-server/       Admin SPA (React + Vite + Tailwind) → go:embed in furo-server
-└── web-inspector/    Inspector SPA (React + Vite + Tailwind) → go:embed in furo
+├── cmd/
+│   ├── furo/             client entrypoint
+│   └── furo-server/      server entrypoint
+├── internal/
+│   ├── client/           tunnel session, capture proxy, inspector, local config
+│   ├── server/           control listener, Host routing, REST API, store, TLS
+│   ├── proto/            control-protocol messages (NDJSON over yamux stream 0)
+│   └── selfupdate/       shared self-update (furo update / furo-server update)
+├── web/
+│   ├── admin/            admin SPA (React + Vite + Tailwind) → go:embed in furo-server
+│   └── inspector/        inspector SPA (React + Vite + Tailwind) → go:embed in furo
+└── test/e2e/             end-to-end tests against the real binaries
 ```
 
 One TCP+TLS connection per client, N logical tunnels multiplexed over yamux. The server opens one stream per incoming HTTP request; proxying is byte-level (`io.Copy`), so WebSocket, SSE and chunked responses stream through untouched.
@@ -197,8 +204,8 @@ One TCP+TLS connection per client, N logical tunnels multiplexed over yamux. The
 Rebuilding the SPAs (dist/ is committed; only needed when changing them):
 
 ```bash
-cd web-server    && npm install && npm run build
-cd web-inspector && npm install && npm run build
+cd web/admin    && npm install && npm run build
+cd web/inspector && npm install && npm run build
 ```
 
 ## Out of scope (v1)
