@@ -516,13 +516,13 @@ func (s *Server) handlePublicConn(rawConn net.Conn) {
 		if isUpgrade(req) {
 			metrics.UpgradesTotal.Inc()
 			metrics.UpgradesActive.Inc()
-			s.proxyUpgrade(conn, br, stream, req)
+			s.proxyUpgrade(conn, br, stream, req, t.username)
 			metrics.UpgradesActive.Dec()
 			metrics.RequestsTotal.WithLabelValues(t.username, "1xx").Inc()
 			return
 		}
 
-		if err := req.Write(stream); err != nil {
+		if err := req.Write(metrics.CountWriter(stream, metrics.UserBytes.WithLabelValues(t.username, "in"))); err != nil {
 			stream.Close()
 			return
 		}
@@ -534,7 +534,8 @@ func (s *Server) handlePublicConn(rawConn net.Conn) {
 			writeSimpleResponse(conn, 502, "bad gateway")
 			return
 		}
-		err = resp.Write(conn) // streams the body; never buffers it whole
+		// Streams the body; never buffers it whole.
+		err = resp.Write(metrics.CountWriter(conn, metrics.UserBytes.WithLabelValues(t.username, "out")))
 		resp.Body.Close()
 		stream.Close()
 		class := metrics.StatusClass(resp.StatusCode)
@@ -548,18 +549,20 @@ func (s *Server) handlePublicConn(rawConn net.Conn) {
 
 // proxyUpgrade forwards the upgrade request then goes fully byte-level in
 // both directions so WebSocket/raw duplex traffic flows untouched.
-func (s *Server) proxyUpgrade(conn net.Conn, br *bufio.Reader, stream *yamux.Stream, req *http.Request) {
+func (s *Server) proxyUpgrade(conn net.Conn, br *bufio.Reader, stream *yamux.Stream, req *http.Request, username string) {
 	defer stream.Close()
-	if err := req.Write(stream); err != nil {
+	inBytes := metrics.UserBytes.WithLabelValues(username, "in")
+	outBytes := metrics.UserBytes.WithLabelValues(username, "out")
+	if err := req.Write(metrics.CountWriter(stream, inBytes)); err != nil {
 		return
 	}
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(stream, br) // br may hold bytes already buffered past the request
+		io.Copy(metrics.CountWriter(stream, inBytes), br) // br may hold bytes already buffered past the request
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(conn, stream)
+		io.Copy(metrics.CountWriter(conn, outBytes), stream)
 		done <- struct{}{}
 	}()
 	<-done

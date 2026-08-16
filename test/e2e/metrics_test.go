@@ -48,6 +48,8 @@ func TestPrometheusMetrics(t *testing.T) {
 		`furo_http_request_duration_seconds_bucket`,
 		`furo_public_bytes_total{direction="in"}`,
 		`furo_public_bytes_total{direction="out"}`,
+		`furo_user_bytes_total{direction="in",username="kate"}`,
+		`furo_user_bytes_total{direction="out",username="kate"}`,
 		`go_goroutines`,
 	} {
 		if !strings.Contains(metrics, want) {
