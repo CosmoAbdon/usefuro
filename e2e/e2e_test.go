@@ -137,6 +137,21 @@ func startClient(t *testing.T, port, controlAddr, token string, extra ...string)
 	return startProc(t, clientBin, args...)
 }
 
+// waitPort blocks until something accepts TCP on 127.0.0.1:port.
+func waitPort(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("port %d never opened", port)
+}
+
 func get(url, host string) (int, string, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Host = host

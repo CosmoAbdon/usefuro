@@ -23,6 +23,9 @@ Without --name the server assigns a random one.`)
 	os.Exit(2)
 }
 
+// version is set by GoReleaser via ldflags.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -32,6 +35,8 @@ func main() {
 		cmdLogin(os.Args[2:])
 	case "http":
 		cmdHTTP(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println("furo", version)
 	default:
 		usage()
 	}

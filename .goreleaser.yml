@@ -1,0 +1,61 @@
+version: 2
+
+project_name: furo
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: furo
+    main: ./client/cmd/furo
+    binary: furo
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+  - id: furo-server
+    main: ./server/cmd/furo-server
+    binary: furo-server
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: furo
+    ids: [furo]
+    name_template: "furo_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: furo-server
+    ids: [furo-server]
+    name_template: "furo-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+
+# Homebrew tap — create the repo <owner>/homebrew-tap and set HOMEBREW_TAP_TOKEN.
+brews:
+  - name: furo
+    ids: [furo]
+    repository:
+      owner: cosmoabdon
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/cosmoabdon/furo
+    description: "Self-hosted reverse tunneling client with local inspector"
+    license: MIT
+
+release:
+  draft: false

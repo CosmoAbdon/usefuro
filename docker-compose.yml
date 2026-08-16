@@ -1,0 +1,17 @@
+services:
+  furo-server:
+    build: .
+    # or: image: ghcr.io/cosmoabdon/furo-server:latest
+    restart: unless-stopped
+    ports:
+      - "443:443"    # public HTTPS (tunnels + admin)
+      - "7835:7835"  # control (client connections)
+    environment:
+      FURO_DNS_TOKEN: ${FURO_DNS_TOKEN}
+      FURO_ADMIN_TOKEN: ${FURO_ADMIN_TOKEN}
+    volumes:
+      - ./config.yml:/etc/furo/config.yml:ro
+      - furo-data:/var/lib/furo
+
+volumes:
+  furo-data:

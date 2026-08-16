@@ -38,6 +38,9 @@ type Config struct {
 	// for PongTimeout is closed and its tunnels unregistered.
 	PingInterval time.Duration // default 30s
 	PongTimeout  time.Duration // default 90s
+	// AdminHandler serves requests whose Host is the bare base domain
+	// (admin SPA + REST API). Nil → 404 for those requests.
+	AdminHandler http.Handler
 	Log          *slog.Logger
 }
 
@@ -50,13 +53,44 @@ type Server struct {
 
 	controlLn net.Listener
 	httpLn    net.Listener
+
+	// adminLn feeds admin-host connections into an internal http.Server.
+	adminLn *chanListener
+	// publicConns tracks in-flight public connections for graceful drain.
+	publicConns sync.WaitGroup
 }
+
+// chanListener turns handed-off net.Conns into an http.Server feed.
+type chanListener struct {
+	ch     chan net.Conn
+	closed chan struct{}
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.ch:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+func (l *chanListener) Close() error   { close(l.closed); return nil }
+func (l *chanListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero} }
 
 type tunnelEntry struct {
 	id       string
 	username string
 	name     string
 	sess     *yamux.Session
+	since    time.Time
+}
+
+// Info is the read-only view of an active tunnel (admin API).
+type Info struct {
+	Username string    `json:"username"`
+	Name     string    `json:"name"`
+	URL      string    `json:"url"`
+	Since    time.Time `json:"since"`
 }
 
 func New(cfg Config) *Server {
@@ -95,11 +129,18 @@ func (s *Server) Start() error {
 		"http", s.httpLn.Addr().String(),
 		"base_domain", s.cfg.BaseDomain)
 
+	if s.cfg.AdminHandler != nil {
+		s.adminLn = &chanListener{ch: make(chan net.Conn), closed: make(chan struct{})}
+		go http.Serve(s.adminLn, s.cfg.AdminHandler)
+	}
+
 	go s.acceptLoop(s.controlLn, s.handleControlConn)
 	go s.acceptLoop(s.httpLn, s.handlePublicConn)
 	return nil
 }
 
+// Close stops accepting, waits up to 10s for in-flight public requests to
+// drain, then tears down client sessions.
 func (s *Server) Close() error {
 	if s.controlLn != nil {
 		s.controlLn.Close()
@@ -107,8 +148,30 @@ func (s *Server) Close() error {
 	if s.httpLn != nil {
 		s.httpLn.Close()
 	}
+	done := make(chan struct{})
+	go func() { s.publicConns.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		s.log.Warn("drain timeout, closing active connections")
+	}
+	if s.adminLn != nil {
+		s.adminLn.Close()
+	}
+	s.mu.Lock()
+	sessions := map[*yamux.Session]struct{}{}
+	for _, t := range s.tunnels {
+		sessions[t.sess] = struct{}{}
+	}
+	s.mu.Unlock()
+	for sess := range sessions {
+		sess.Close()
+	}
 	return nil
 }
+
+// SetAdminHandler installs the admin SPA/API handler. Call before Start.
+func (s *Server) SetAdminHandler(h http.Handler) { s.cfg.AdminHandler = h }
 
 // ControlAddr returns the bound control address (useful with ":0" in tests).
 func (s *Server) ControlAddr() string { return s.controlLn.Addr().String() }
@@ -251,7 +314,7 @@ func (s *Server) register(w *ctlWriter, sess *yamux.Session, username string, ms
 		return
 	}
 	id := "t_" + randHex(8)
-	s.tunnels[username+"/"+name] = &tunnelEntry{id: id, username: username, name: name, sess: sess}
+	s.tunnels[username+"/"+name] = &tunnelEntry{id: id, username: username, name: name, sess: sess, since: time.Now()}
 	s.mu.Unlock()
 
 	url := fmt.Sprintf("%s://%s.%s.%s", s.scheme(), name, username, s.cfg.BaseDomain)
@@ -281,15 +344,39 @@ func (s *Server) unregisterByID(id string) {
 	}
 }
 
+// ActiveTunnels returns a snapshot of the registry for the admin API.
+func (s *Server) ActiveTunnels() []Info {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Info, 0, len(s.tunnels))
+	for _, t := range s.tunnels {
+		out = append(out, Info{
+			Username: t.username,
+			Name:     t.name,
+			URL:      fmt.Sprintf("%s://%s.%s.%s", s.scheme(), t.name, t.username, s.cfg.BaseDomain),
+			Since:    t.since,
+		})
+	}
+	return out
+}
+
 // ---- public HTTP side ----
 
 func (s *Server) handlePublicConn(conn net.Conn) {
+	s.publicConns.Add(1)
+	defer s.publicConns.Done()
 	defer conn.Close()
 	br := bufio.NewReader(conn)
 	for {
 		req, err := http.ReadRequest(br)
 		if err != nil {
 			return
+		}
+		if s.isAdminHost(req.Host) {
+			if !s.serveAdmin(conn, req) {
+				return
+			}
+			continue // connection stays request-routed (Host may change per request)
 		}
 		t := s.lookup(req.Host)
 		if t == nil {
@@ -356,6 +443,41 @@ func (s *Server) proxyUpgrade(conn net.Conn, br *bufio.Reader, stream *yamux.Str
 	<-done
 	// Closing both unblocks the remaining copy.
 	conn.Close()
+}
+
+// isAdminHost: bare base domain (no tunnel labels) → admin SPA + API.
+func (s *Server) isAdminHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host == s.cfg.BaseDomain
+}
+
+// serveAdmin proxies ONE request through the internal admin http.Server via
+// an in-memory pipe, then returns control to the raw loop — keep-alive
+// connections may switch Host between requests, so routing is per request.
+// Returns false when the connection must close.
+func (s *Server) serveAdmin(conn net.Conn, req *http.Request) bool {
+	if s.adminLn == nil {
+		writeSimpleResponse(conn, 404, "no admin configured")
+		return false
+	}
+	serverSide, clientSide := net.Pipe()
+	defer clientSide.Close()
+	select {
+	case s.adminLn.ch <- serverSide:
+	case <-s.adminLn.closed:
+		writeSimpleResponse(conn, 503, "shutting down")
+		return false
+	}
+	go req.Write(clientSide)
+	resp, err := http.ReadResponse(bufio.NewReader(clientSide), req)
+	if err != nil {
+		writeSimpleResponse(conn, 502, "admin unavailable")
+		return false
+	}
+	err = resp.Write(conn)
+	return err == nil && !resp.Close && !req.Close
 }
 
 func (s *Server) scheme() string {

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cosmoabdon/furo/server/internal/api"
 	"github.com/cosmoabdon/furo/server/internal/config"
 	"github.com/cosmoabdon/furo/server/internal/store"
 	"github.com/cosmoabdon/furo/server/internal/tlsmgr"
@@ -30,6 +31,9 @@ user/token accept --config (to find data_dir/TLS) or --data-dir directly.`)
 	os.Exit(2)
 }
 
+// version is set by GoReleaser via ldflags.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -43,6 +47,8 @@ func main() {
 		cmdUser(os.Args[2:])
 	case "token":
 		cmdToken(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println("furo-server", version)
 	default:
 		usage()
 	}
@@ -175,9 +181,13 @@ func cmdServe(args []string) {
 	fs.String("data-dir", "", "data directory (sqlite + certs)")
 	pingInterval := fs.Duration("ping-interval", 30*time.Second, "heartbeat ping interval")
 	pongTimeout := fs.Duration("pong-timeout", 90*time.Second, "drop session after this long without a pong")
+	adminToken := fs.String("admin-token", "", "admin token for the web UI/API (overrides config)")
 	fs.Parse(args)
 
 	cfg := loadConfig(fs, *configPath)
+	if *adminToken != "" {
+		cfg.AdminToken = *adminToken
+	}
 	if *controlAddr == "" {
 		*controlAddr = fmt.Sprintf(":%d", cfg.ControlPort)
 	}
@@ -223,16 +233,24 @@ func cmdServe(args []string) {
 	}
 
 	srv := tunnel.New(tcfg)
+
+	var issueCert api.CertIssuer
+	if mgr != nil {
+		issueCert = mgr.EnsureUser
+	}
+	adminAPI := api.New(st, srv, cfg.AdminToken, issueCert, log)
+	srv.SetAdminHandler(adminAPI.Handler())
+
 	if err := srv.Start(); err != nil {
 		log.Error("start failed", "err", err)
 		os.Exit(1)
 	}
-	defer srv.Close()
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
-	log.Info("shutting down")
+	log.Info("shutting down (draining up to 10s)")
+	srv.Close()
 }
 
 // ---- user ----
