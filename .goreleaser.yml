@@ -34,9 +34,15 @@ archives:
   - id: furo
     ids: [furo]
     name_template: "furo_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
   - id: furo-server
     ids: [furo-server]
     name_template: "furo-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
 
 checksum:
   name_template: checksums.txt
