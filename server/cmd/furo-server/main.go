@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -215,6 +216,18 @@ func cmdServe(args []string) {
 	if mgr != nil {
 		tcfg.ControlTLS = tlsmgr.ServerTLSConfig(mgr)
 		tcfg.PublicTLS = tlsmgr.ServerTLSConfig(mgr)
+		// Users can be created by the CLI while this server runs — load/issue
+		// their wildcard the first time one of their clients authenticates.
+		var ensured sync.Map
+		tcfg.OnUserAuth = func(username string) {
+			if _, done := ensured.LoadOrStore(username, true); done {
+				return
+			}
+			if err := mgr.EnsureUser(username); err != nil {
+				log.Error("cert issuance (user auth)", "username", username, "err", err)
+				ensured.Delete(username) // retry on next auth
+			}
+		}
 		// Kick off issuance/renewal for base + existing users.
 		go func() {
 			if err := mgr.EnsureBase(); err != nil {

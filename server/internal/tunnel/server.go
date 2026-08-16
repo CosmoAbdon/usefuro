@@ -41,7 +41,11 @@ type Config struct {
 	// AdminHandler serves requests whose Host is the bare base domain
 	// (admin SPA + REST API). Nil → 404 for those requests.
 	AdminHandler http.Handler
-	Log          *slog.Logger
+	// OnUserAuth runs (async) whenever a client authenticates. Used to make
+	// sure the user's wildcard cert is loaded/issued even when the user was
+	// created by the CLI after this server started.
+	OnUserAuth func(username string)
+	Log        *slog.Logger
 }
 
 type Server struct {
@@ -270,6 +274,9 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	}
 	w.send(proto.Message{Type: proto.TypeAuthOK, Username: username})
 	s.log.Info("client authenticated", "username", username, "remote", conn.RemoteAddr())
+	if s.cfg.OnUserAuth != nil {
+		go s.cfg.OnUserAuth(username)
+	}
 
 	s.mu.Lock()
 	s.sessWriters[sess] = w
