@@ -10,7 +10,7 @@ furo http 3003 --name api-orbium
 
 ## Status
 
-Early development. Current milestone: **M3** — real TLS: Let's Encrypt wildcards per user (DNS-01 via certmagic + libdns), TLS on the control and public listeners, `furo-server init` wizard, `furo login`.
+Early development. Current milestone: **M4** — local inspector: every request through the tunnel is captured (last 500, bodies capped at 1 MB) and browsable at `http://localhost:4040` — live list (SSE), header/body detail with JSON pretty-print, one-click replay straight to your local port, clear. Port auto-increments when 4040 is taken; `--no-inspector` disables it.
 
 ## Layout
 
@@ -41,6 +41,7 @@ furo-server serve --config config.yml
 furo login furo_...  --server control.tunnel.example.com:7835
 furo http 3000 --name web
 # → https://web.alice.tunnel.example.com → localhost:3000
+# Inspector: http://localhost:4040  (live requests, detail, replay)
 ```
 
 ## Dev mode (no domain, no TLS)

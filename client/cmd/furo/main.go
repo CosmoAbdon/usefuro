@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/cosmoabdon/furo/client/internal/clientcfg"
+	"github.com/cosmoabdon/furo/client/internal/inspector"
+	"github.com/cosmoabdon/furo/client/internal/proxy"
 	"github.com/cosmoabdon/furo/client/internal/tunnel"
 )
 
@@ -79,6 +81,8 @@ func cmdHTTP(args []string) {
 	ca := fs.String("ca", saved.CA, "CA bundle for self-signed servers")
 	insecure := fs.Bool("insecure", saved.Insecure, "skip TLS verification")
 	plaintext := fs.Bool("plaintext", saved.Plaintext, "no TLS on the control connection (dev)")
+	inspectorPort := fs.Int("inspector-port", 4040, "inspector base port (auto-increments when busy)")
+	noInspector := fs.Bool("no-inspector", false, "disable the local inspector")
 	fs.StringVar(name, "n", "", "tunnel name (shorthand)")
 
 	// Accept "furo http 3003 --flags" (port first, then flags).
@@ -94,6 +98,19 @@ func cmdHTTP(args []string) {
 		os.Exit(1)
 	}
 
+	var ring *proxy.Ring
+	if !*noInspector {
+		ring = proxy.NewRing()
+		insp := inspector.New(ring, log)
+		url, err := insp.Start(*inspectorPort)
+		if err != nil {
+			log.Error("inspector failed to start", "err", err)
+			os.Exit(1)
+		}
+		defer insp.Close()
+		fmt.Printf("Inspector: %s\n", url)
+	}
+
 	c, err := tunnel.New(tunnel.Config{
 		ServerAddr: *server,
 		Token:      *token,
@@ -102,6 +119,7 @@ func cmdHTTP(args []string) {
 		Plaintext:  *plaintext,
 		CAFile:     *ca,
 		Insecure:   *insecure,
+		Ring:       ring,
 		Log:        log,
 	})
 	if err != nil {

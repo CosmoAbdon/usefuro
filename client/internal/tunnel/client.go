@@ -20,6 +20,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/cosmoabdon/furo/client/internal/proxy"
 	"github.com/cosmoabdon/furo/proto"
 )
 
@@ -31,11 +32,12 @@ const (
 type Config struct {
 	ServerAddr string // control address, e.g. "control.proxy.duto.sh:7835"
 	Token      string
-	Name       string // tunnel name; empty → server generates one
-	LocalAddr  string // e.g. "127.0.0.1:3003"
-	Plaintext  bool   // no TLS on the control connection (dev servers)
-	CAFile     string // extra CA bundle (self-signed servers)
-	Insecure   bool   // skip TLS verification
+	Name       string      // tunnel name; empty → server generates one
+	LocalAddr  string      // e.g. "127.0.0.1:3003"
+	Plaintext  bool        // no TLS on the control connection (dev servers)
+	CAFile     string      // extra CA bundle (self-signed servers)
+	Insecure   bool        // skip TLS verification
+	Ring       *proxy.Ring // capture buffer for the inspector; nil disables capture
 	Log        *slog.Logger
 }
 
@@ -198,17 +200,31 @@ func (c *Client) handleStream(stream *yamux.Stream) {
 	}
 	defer local.Close()
 
+	var reqR io.Reader = br
+	var respR io.Reader = local
+	var tap *proxy.Tap
+	if c.cfg.Ring != nil {
+		tap = proxy.NewTap(c.cfg.Ring, c.name, c.cfg.LocalAddr)
+		reqR = tap.ReqReader(br)
+		respR = tap.RespReader(local)
+	}
+
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(local, br)
+		io.Copy(local, reqR)
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(stream, local)
+		io.Copy(stream, respR)
 		done <- struct{}{}
 	}()
 	<-done
-	// Closing both (via defers) unblocks the remaining copy.
+	stream.Close()
+	local.Close() // closing both unblocks the remaining copy
+	<-done
+	if tap != nil {
+		tap.Finish()
+	}
 }
 
 func readMsg(sc *bufio.Scanner) (proto.Message, error) {
