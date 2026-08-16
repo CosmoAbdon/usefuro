@@ -8,6 +8,7 @@ package metrics
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 
@@ -63,6 +64,10 @@ var (
 		Name: "furo_public_bytes_total",
 		Help: "Bytes through the public listener.",
 	}, []string{"direction"}) // in | out
+	UserBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "furo_user_bytes_total",
+		Help: "Bytes proxied per tunnel owner (in = request to the tunnel, out = response to the visitor). The practical cost-per-user signal: proxy CPU scales with bytes moved.",
+	}, []string{"username", "direction"})
 
 	// Upgraded (WebSocket-style) connections.
 	UpgradesActive = promauto.NewGauge(prometheus.GaugeOpts{
@@ -74,6 +79,22 @@ var (
 		Help: "Connections that switched to duplex via Upgrade.",
 	})
 )
+
+// CountWriter wraps w, adding everything written to counter c.
+func CountWriter(w io.Writer, c prometheus.Counter) io.Writer {
+	return &countWriter{w: w, c: c}
+}
+
+type countWriter struct {
+	w io.Writer
+	c prometheus.Counter
+}
+
+func (cw *countWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	cw.c.Add(float64(n))
+	return n, err
+}
 
 // StatusClass maps an HTTP status to its metric label ("2xx"; 0 → "err").
 func StatusClass(status int) string {

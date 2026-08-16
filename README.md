@@ -149,7 +149,7 @@ scrape_configs:
       - targets: ["your-server:9091"]
 ```
 
-Key series: `furo_tunnels_active{username}`, `furo_sessions_active`, `furo_http_requests_total{username,status_class}`, `furo_http_request_duration_seconds` (histogram), `furo_http_errors_total{reason}`, `furo_public_bytes_total{direction}`, `furo_upgrades_active`, `furo_auth_total{outcome}`, `furo_heartbeat_timeouts_total` — plus the standard Go/process collectors. Labels never carry tunnel names (unbounded); usernames only.
+Key series: `furo_tunnels_active{username}`, `furo_sessions_active`, `furo_http_requests_total{username,status_class}`, `furo_http_request_duration_seconds` (histogram), `furo_http_errors_total{reason}`, `furo_public_bytes_total{direction}`, `furo_user_bytes_total{username,direction}` (per-user traffic — the cost-per-user signal), `furo_upgrades_active`, `furo_auth_total{outcome}`, `furo_heartbeat_timeouts_total` — plus the standard Go/process collectors. Labels never carry tunnel names (unbounded); usernames only.
 
 Ready-made dashboard: import [`deploy/grafana/furo-dashboard.json`](deploy/grafana/furo-dashboard.json) (tunnels/sessions stats, request rate by status class, p50/p95/p99 latency, per-user rate, proxy errors, traffic, runtime).
 </details>

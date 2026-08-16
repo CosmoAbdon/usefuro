@@ -126,6 +126,29 @@
       "fieldConfig": { "defaults": {}, "overrides": [] }
     },
     {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Top users by traffic",
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "topk(5, sum by (username) (rate(furo_user_bytes_total[5m])))", "legendFormat": "{{username}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "id": 13,
+      "type": "bargauge",
+      "title": "Traffic by user (24h)",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "topk(10, sum by (username) (increase(furo_user_bytes_total[24h])))", "legendFormat": "{{username}}" }
+      ],
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
       "id": 11,
       "type": "timeseries",
       "title": "CPU (cores) / open FDs",
