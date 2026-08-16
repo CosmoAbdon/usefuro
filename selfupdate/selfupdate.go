@@ -4,6 +4,8 @@ package selfupdate
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -61,9 +63,6 @@ func LatestTag() (string, error) {
 // Run updates the current executable (named binary, e.g. "furo") to the
 // latest release. No-op when already on it.
 func Run(binary, currentVersion string) error {
-	if runtime.GOOS == "windows" {
-		return fmt.Errorf("self-update is not supported on windows — download the release manually")
-	}
 	tag, err := LatestTag()
 	if err != nil {
 		return fmt.Errorf("check latest release: %w", err)
@@ -77,7 +76,11 @@ func Run(binary, currentVersion string) error {
 		fmt.Printf("current build is %s (from source); installing release %s over it\n", currentVersion, tag)
 	}
 
-	asset := fmt.Sprintf("%s_%s_%s_%s.tar.gz", binary, version, runtime.GOOS, runtime.GOARCH)
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	asset := fmt.Sprintf("%s_%s_%s_%s%s", binary, version, runtime.GOOS, runtime.GOARCH, ext)
 	base := fmt.Sprintf("https://github.com/%s/releases/download/%s/", repo, tag)
 
 	fmt.Printf("downloading %s ...\n", asset)
@@ -88,7 +91,11 @@ func Run(binary, currentVersion string) error {
 	if err := verifyChecksum(base+"checksums.txt", asset, archive); err != nil {
 		return err
 	}
-	bin, err := extractBinary(archive, binary)
+	binName := binary
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	bin, err := extractBinary(archive, binName)
 	if err != nil {
 		return err
 	}
@@ -100,15 +107,36 @@ func Run(binary, currentVersion string) error {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
+	if err := replaceExecutable(exe, bin); err != nil {
+		return err
+	}
+	fmt.Printf("updated %s: %s → %s (%s)\n", binary, currentVersion, version, exe)
+	return nil
+}
+
+// replaceExecutable swaps the file at exe for the new bytes. On Windows a
+// running executable cannot be overwritten but CAN be renamed, so the old
+// one is moved aside first (the leftover .old is cleaned on the next run).
+func replaceExecutable(exe string, bin []byte) error {
+	old := exe + ".old"
+	os.Remove(old) // leftover from a previous windows update, if any
 	tmp := exe + ".new"
 	if err := os.WriteFile(tmp, bin, 0o755); err != nil {
 		return fmt.Errorf("write %s (need write access to %s — try sudo): %w", tmp, filepath.Dir(exe), err)
+	}
+	if runtime.GOOS == "windows" {
+		if err := os.Rename(exe, old); err != nil {
+			os.Remove(tmp)
+			return fmt.Errorf("move current executable aside: %w", err)
+		}
 	}
 	if err := os.Rename(tmp, exe); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("replace %s: %w", exe, err)
 	}
-	fmt.Printf("updated %s: %s → %s (%s)\n", binary, currentVersion, version, exe)
+	if runtime.GOOS == "windows" {
+		os.Remove(old) // fails while this process runs — next update cleans it
+	}
 	return nil
 }
 
@@ -149,8 +177,11 @@ func verifyChecksum(checksumsURL, asset string, archive []byte) error {
 	return nil
 }
 
-// extractBinary pulls the named file out of a .tar.gz archive.
+// extractBinary pulls the named file out of a .tar.gz or .zip archive.
 func extractBinary(archive []byte, name string) ([]byte, error) {
+	if len(archive) >= 4 && string(archive[:4]) == "PK\x03\x04" {
+		return extractFromZip(archive, name)
+	}
 	gz, err := gzip.NewReader(strings.NewReader(string(archive)))
 	if err != nil {
 		return nil, err
@@ -168,4 +199,22 @@ func extractBinary(archive []byte, name string) ([]byte, error) {
 			return io.ReadAll(io.LimitReader(tr, 500<<20))
 		}
 	}
+}
+
+func extractFromZip(archive []byte, name string) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range zr.File {
+		if filepath.Base(f.Name) == name {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+			return io.ReadAll(io.LimitReader(rc, 500<<20))
+		}
+	}
+	return nil, fmt.Errorf("%s not found in archive", name)
 }

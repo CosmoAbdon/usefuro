@@ -21,7 +21,7 @@ Requirements: a Linux box with ports 443 and 7835 reachable, a domain with a wil
 
 ```bash
 # 1. install (or grab a release binary / use Docker below)
-go install github.com/cosmoabdon/furo/server/cmd/furo-server@latest
+curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh | sh -s -- --server
 
 # 2. wizard: domain, ACME e-mail, DNS token, ports → config.yml
 #    (also validates that *.your-domain resolves to this machine)
@@ -64,8 +64,12 @@ data_dir: /var/lib/furo         # sqlite + certs
 ## Client setup (goal: under 2 minutes)
 
 ```bash
-# install: brew tap cosmoabdon/tap && brew install furo
-# or:      go install github.com/cosmoabdon/furo/client/cmd/furo@latest
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.ps1 | iex
+# or: go install github.com/cosmoabdon/usefuro/client/cmd/furo@latest
+# update later, any platform: furo update
 
 furo login furo_...  --server control.tunnel.example.com:7835   # once
 furo http 3000 --name web                                       # tunnel up

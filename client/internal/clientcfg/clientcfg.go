@@ -4,6 +4,7 @@ package clientcfg
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,6 +18,13 @@ type File struct {
 }
 
 func Path() (string, error) {
+	if runtime.GOOS == "windows" {
+		dir, err := os.UserConfigDir() // %AppData%
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "furo", "config.yml"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
