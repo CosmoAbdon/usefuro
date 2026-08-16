@@ -69,6 +69,7 @@ type Server struct {
 type chanListener struct {
 	ch     chan net.Conn
 	closed chan struct{}
+	once   sync.Once
 }
 
 func (l *chanListener) Accept() (net.Conn, error) {
@@ -79,7 +80,10 @@ func (l *chanListener) Accept() (net.Conn, error) {
 		return nil, net.ErrClosed
 	}
 }
-func (l *chanListener) Close() error   { close(l.closed); return nil }
+
+// Close is idempotent: both Server.Close and the internal http.Serve (on
+// Accept error) close this listener.
+func (l *chanListener) Close() error   { l.once.Do(func() { close(l.closed) }); return nil }
 func (l *chanListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero} }
 
 type tunnelEntry struct {
@@ -490,6 +494,7 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 			return
 		}
 		err = resp.Write(conn) // streams the body; never buffers it whole
+		resp.Body.Close()
 		stream.Close()
 		if err != nil || resp.Close || req.Close {
 			return
@@ -543,13 +548,14 @@ func (s *Server) serveAdmin(conn net.Conn, req *http.Request) bool {
 		writeSimpleResponse(conn, 503, "shutting down")
 		return false
 	}
-	go req.Write(clientSide)
+	go func() { _ = req.Write(clientSide) }()
 	resp, err := http.ReadResponse(bufio.NewReader(clientSide), req)
 	if err != nil {
 		writeSimpleResponse(conn, 502, "admin unavailable")
 		return false
 	}
 	err = resp.Write(conn)
+	resp.Body.Close()
 	return err == nil && !resp.Close && !req.Close
 }
 
