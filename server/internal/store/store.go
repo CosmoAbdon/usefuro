@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/cosmoabdon/furo/server/internal/names"
+	"github.com/cosmoabdon/usefuro/server/internal/names"
 )
 
 var (

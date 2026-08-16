@@ -13,11 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cosmoabdon/furo/server/internal/api"
-	"github.com/cosmoabdon/furo/server/internal/config"
-	"github.com/cosmoabdon/furo/server/internal/store"
-	"github.com/cosmoabdon/furo/server/internal/tlsmgr"
-	"github.com/cosmoabdon/furo/server/internal/tunnel"
+	"github.com/cosmoabdon/usefuro/selfupdate"
+	"github.com/cosmoabdon/usefuro/server/internal/api"
+	"github.com/cosmoabdon/usefuro/server/internal/config"
+	"github.com/cosmoabdon/usefuro/server/internal/store"
+	"github.com/cosmoabdon/usefuro/server/internal/tlsmgr"
+	"github.com/cosmoabdon/usefuro/server/internal/tunnel"
 )
 
 func usage() {
@@ -27,6 +28,7 @@ func usage() {
                      [--domain X] [--tls off|self-signed|acme] [--data-dir ./data]
   furo-server user   add <username> | ls | rm <username>
   furo-server token  add <username> [--label X] | ls <username> | revoke <hash-prefix>
+  furo-server update                           self-update to the latest release
 
 user/token accept --config (to find data_dir/TLS) or --data-dir directly.`)
 	os.Exit(2)
@@ -48,6 +50,11 @@ func main() {
 		cmdUser(os.Args[2:])
 	case "token":
 		cmdToken(os.Args[2:])
+	case "update":
+		if err := selfupdate.Run("furo-server", version); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("furo-server", version)
 	default:

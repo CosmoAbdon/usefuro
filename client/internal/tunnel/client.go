@@ -21,8 +21,8 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/cosmoabdon/furo/client/internal/proxy"
-	"github.com/cosmoabdon/furo/proto"
+	"github.com/cosmoabdon/usefuro/client/internal/proxy"
+	"github.com/cosmoabdon/usefuro/proto"
 )
 
 const (

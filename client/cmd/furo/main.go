@@ -9,10 +9,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/cosmoabdon/furo/client/internal/clientcfg"
-	"github.com/cosmoabdon/furo/client/internal/inspector"
-	"github.com/cosmoabdon/furo/client/internal/proxy"
-	"github.com/cosmoabdon/furo/client/internal/tunnel"
+	"github.com/cosmoabdon/usefuro/client/internal/clientcfg"
+	"github.com/cosmoabdon/usefuro/client/internal/inspector"
+	"github.com/cosmoabdon/usefuro/client/internal/proxy"
+	"github.com/cosmoabdon/usefuro/client/internal/tunnel"
+	"github.com/cosmoabdon/usefuro/selfupdate"
 )
 
 // version is set by GoReleaser via ldflags.
@@ -24,6 +25,7 @@ func usage() {
   furo http <port>    [--name X | -n X] [connection flags]
   furo start          [--file furo.yml] [connection flags]
   furo status         [--inspector-port N]
+  furo update         self-update to the latest release
 
 connection flags: --server addr  --token T  --ca file  --insecure  --plaintext
                   --inspector-port N  --no-inspector
@@ -45,6 +47,11 @@ func main() {
 		cmdStart(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
+	case "update":
+		if err := selfupdate.Run("furo", version); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("furo", version)
 	default:

@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cosmoabdon/furo/client/internal/proxy"
-	"github.com/cosmoabdon/furo/client/internal/tunnel"
-	webinspector "github.com/cosmoabdon/furo/web-inspector"
+	"github.com/cosmoabdon/usefuro/client/internal/proxy"
+	"github.com/cosmoabdon/usefuro/client/internal/tunnel"
+	webinspector "github.com/cosmoabdon/usefuro/web-inspector"
 )
 
 // PortAttempts limits the auto-increment search (4040, 4041, ...). Exported

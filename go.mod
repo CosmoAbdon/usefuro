@@ -1,4 +1,4 @@
-module github.com/cosmoabdon/furo
+module github.com/cosmoabdon/usefuro
 
 go 1.26.5
 
