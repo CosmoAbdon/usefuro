@@ -82,6 +82,7 @@ func (t *Tap) Finish() {
 	if req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(t.req.Bytes()))); err == nil {
 		e.Method = req.Method
 		e.Path = req.URL.RequestURI()
+		e.Host = req.Host
 		e.ReqHeaders = req.Header
 		e.ReqBody, e.ReqTruncated = readCappedBody(req.Body, t.req.Truncated())
 		if resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(t.resp.Bytes())), req); err == nil {

@@ -21,6 +21,7 @@ type Entry struct {
 	Tunnel   string        `json:"tunnel"`
 	Method   string        `json:"method"`
 	Path     string        `json:"path"`
+	Host     string        `json:"host"`   // public Host header (for copy-as-curl)
 	Status   int           `json:"status"` // 0 when the response never parsed
 	Start    time.Time     `json:"start"`
 	Duration time.Duration `json:"duration"`
@@ -48,6 +49,7 @@ type Summary struct {
 	Tunnel   string        `json:"tunnel"`
 	Method   string        `json:"method"`
 	Path     string        `json:"path"`
+	Host     string        `json:"host"`
 	Status   int           `json:"status"`
 	Start    time.Time     `json:"start"`
 	Duration time.Duration `json:"duration"`
@@ -58,7 +60,7 @@ type Summary struct {
 
 func (e *Entry) Summary() Summary {
 	return Summary{
-		ID: e.ID, Tunnel: e.Tunnel, Method: e.Method, Path: e.Path,
+		ID: e.ID, Tunnel: e.Tunnel, Method: e.Method, Path: e.Path, Host: e.Host,
 		Status: e.Status, Start: e.Start, Duration: e.Duration,
 		ReqSize: e.ReqSize, RespSize: e.RespSize, IsReplay: e.IsReplay,
 	}
