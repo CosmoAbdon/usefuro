@@ -3,51 +3,91 @@
 Self-hosted reverse tunneling (ngrok-style), open source. Host your own server on your own domain and let your team create tunnels — with multiuser auth, per-user wildcard TLS and a local request inspector with replay.
 
 ```bash
-furo login furo_...
-furo http 3003 --name api-orbium
-# → https://api-orbium.cosmoabdon.tunnel.example.com → localhost:3003
+furo http 3003 --name api
+# → https://api.alice.tunnel.example.com → localhost:3003
 # Inspector: http://localhost:4040
 ```
 
 Why not frp/chisel/bore?
 
-1. **Multiuser out of the box** — users, tokens, per-user subdomain namespacing (`*.<user>.<base>`).
-2. **Local inspector with replay** — dashboard at `localhost:4040` with every request/response (headers + body) and one-click replay, like ngrok's.
+1. **Multiuser out of the box** — users, tokens, per-user subdomain namespacing: every tunnel lives at `<name>.<user>.<your-domain>`.
+2. **Local inspector with replay** — dashboard at `localhost:4040` with every request/response (payloads, headers, copy as cURL) and one-click replay, like ngrok's.
 3. **Setup DX** — one binary + ~8-line config. If the server takes more than 10 minutes you did something exotic.
 
-## Server setup (goal: under 10 minutes)
+---
 
-Requirements: a Linux box with ports 443 and 7835 reachable, a domain with a wildcard record (`*.tunnel.example.com` → server IP), and a DNS provider API token for Let's Encrypt DNS-01 (Cloudflare supported).
+## Install the client (any machine that creates tunnels)
 
 ```bash
-# 1. install (or grab a release binary / use Docker below)
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.ps1 | iex
+
+# or build from source
+go install github.com/cosmoabdon/usefuro/client/cmd/furo@latest
+```
+
+Update any time with `furo update`.
+
+## Use the client
+
+Your server admin gives you a token (`furo_...`) once. Then:
+
+```bash
+furo login furo_...  --server tunnel.example.com:7835    # saved; run once
+furo http 3000 --name web                                # expose localhost:3000
+furo status                                              # all tunnels on this machine
+```
+
+- `--name` is optional — without it the server assigns a random name like `web7k2a`.
+- The URL is stable across reconnects; the client reconnects with backoff and re-registers by itself.
+- Every run gets a local **inspector** at `http://localhost:4040` (auto-increments if busy): live request list with filters, payload/header detail, copy as cURL, replay straight to your local port. `--no-inspector` disables it.
+
+Several tunnels at once — write a `furo.yml` and run `furo start`:
+
+```yaml
+tunnels:
+  api:
+    proto: http
+    port: 3003
+    name: custom-api   # public name; omit for a random one
+  web:
+    port: 3000
+```
+
+All tunnels of a process share one multiplexed connection and one inspector.
+
+---
+
+## Run your own server (goal: under 10 minutes)
+
+You need: a Linux box with ports 443 and 7835 reachable, a domain with a wildcard record (`*.tunnel.example.com` AND `tunnel.example.com` → server IP, **not** proxied/CDN), and a DNS provider API token for Let's Encrypt DNS-01 (cloudflare, digitalocean, hetzner, gandi or desec).
+
+```bash
+# 1. install
 curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh | sh -s -- --server
 
-# 2. wizard: domain, ACME e-mail, DNS token, ports → config.yml
-#    (also validates that *.your-domain resolves to this machine)
+# 2. wizard: domain, ACME e-mail, DNS provider + token, ports → config.yml
+#    (also checks that *.your-domain resolves to this machine)
 furo-server init
 
 # 3. secrets referenced by config.yml
-export FURO_DNS_TOKEN=...       # DNS provider API token
-export FURO_ADMIN_TOKEN=...     # web admin token (any strong secret)
+export FURO_DNS_TOKEN=...       # DNS provider API token (e.g. Cloudflare: Zone:Read + DNS:Edit)
+export FURO_ADMIN_TOKEN=...     # web admin password (any strong secret)
 
-# 4. first user — prints the client token ONCE and issues *.alice.<base>
+# 4. first user — prints their client token ONCE and issues *.alice.<your-domain>
 furo-server user add alice --config config.yml
 
 # 5. run
 furo-server serve --config config.yml
 ```
 
-Admin web UI lives at `https://<base-domain>` (login with `FURO_ADMIN_TOKEN`): create/remove users, mint/revoke tokens, watch active tunnels live.
+Admin web UI at `https://tunnel.example.com` (login with `FURO_ADMIN_TOKEN`): create/remove users, mint/revoke tokens, watch and kill active tunnels.
 
-### Docker
-
-```bash
-furo-server init          # generate config.yml first (or write it by hand)
-FURO_DNS_TOKEN=... FURO_ADMIN_TOKEN=... docker compose up -d
-```
-
-### config.yml
+<details>
+<summary><b>config.yml reference</b></summary>
 
 ```yaml
 base_domain: tunnel.example.com
@@ -61,39 +101,74 @@ admin_token: ${FURO_ADMIN_TOKEN}
 data_dir: /var/lib/furo         # sqlite + certs
 ```
 
-## Client setup (goal: under 2 minutes)
+Any other [libdns](https://github.com/libdns) provider works — add the import and one case in `server/internal/tlsmgr/acme.go`.
+</details>
+
+<details>
+<summary><b>Docker</b></summary>
 
 ```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.sh | sh
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/CosmoAbdon/usefuro/main/install.ps1 | iex
-# or: go install github.com/cosmoabdon/usefuro/client/cmd/furo@latest
-# update later, any platform: furo update
+furo-server init          # generate config.yml first (or write it by hand)
+FURO_DNS_TOKEN=... FURO_ADMIN_TOKEN=... docker compose up -d
+```
+</details>
 
-furo login furo_...  --server control.tunnel.example.com:7835   # once
-furo http 3000 --name web                                       # tunnel up
-furo status                                                     # all tunnels on this machine
+<details>
+<summary><b>systemd</b></summary>
+
+```ini
+# /etc/systemd/system/furo-server.service
+[Unit]
+Description=furo tunnel server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/furo-server serve --config /etc/furo/config.yml
+EnvironmentFile=/etc/furo/env
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Multiple tunnels from one file (`furo start`, compose-style `furo.yml`):
+`/etc/furo/env` (chmod 600) holds `FURO_DNS_TOKEN=...` and `FURO_ADMIN_TOKEN=...`.
+</details>
+
+<details>
+<summary><b>Backups (Litestream)</b></summary>
+
+State lives in one SQLite file: `<data_dir>/furo.db` (users, token hashes — active tunnels are memory-only). Stream it to S3-compatible storage with [Litestream](https://litestream.io):
 
 ```yaml
-tunnels:
-  api:
-    proto: http
-    port: 3003
-    name: api-orbium
-  web:
-    port: 3000        # no name → server-generated
+# /etc/litestream.yml
+dbs:
+  - path: /var/lib/furo/furo.db
+    replicas:
+      - url: s3://my-bucket/furo
 ```
 
-All tunnels of a process share one multiplexed connection and one inspector.
+Certificates in `<data_dir>/certs` re-issue themselves; backing them up just avoids a re-issuance burst after disaster recovery.
+</details>
 
-- `--name` optional — without it the server assigns a random `web7k2a`-style name.
-- The tunnel URL is stable across reconnects; the client reconnects automatically with backoff and re-registers.
-- Every tunnel gets a local **inspector** (`http://localhost:4040`, auto-increments if busy): live request list with filters, header/body detail with JSON pretty-print, replay straight to your local port, clear. `--no-inspector` disables it.
-- Multiple terminals/machines per user work; names collide per user (`register_err name_taken`).
+---
+
+## CLI reference
+
+```
+furo login <token> [--server addr] [--ca file] [--insecure] [--plaintext]
+furo http <port>   [--name X] [--inspector-port N] [--no-inspector]
+furo start         [--file furo.yml]               all tunnels from furo.yml
+furo status        [--inspector-port N]            tunnels of every local furo process
+furo update                                        self-update to the latest release
+
+furo-server init                                   setup wizard → config.yml
+furo-server serve  [--config config.yml]
+furo-server user   add <username> | ls | rm <username>
+furo-server token  add <username> [--label X] | ls <username> | revoke <hash-prefix>
+furo-server update                                 self-update to the latest release
+```
 
 ## Dev mode (no domain, no TLS)
 
@@ -105,40 +180,6 @@ curl -H 'Host: test.alice.localhost' http://127.0.0.1:8080/
 ```
 
 `--tls self-signed` gives real TLS locally: CA lands in `data/certs/ca.pem`, point the client at it with `--ca`.
-
-## CLI reference
-
-```
-furo-server init                                   setup wizard → config.yml
-furo-server serve  [--config config.yml]
-furo-server user   add <username> | ls | rm <username>
-furo-server token  add <username> [--label X] | ls <username> | revoke <hash-prefix>
-
-furo login <token> [--server addr] [--ca file] [--insecure] [--plaintext]
-furo http <port>   [--name X] [--inspector-port N] [--no-inspector] [...]
-furo start         [--file furo.yml] [...]         all tunnels from furo.yml
-furo status        [--inspector-port N]            tunnels of every local furo process
-```
-
-More DNS providers: anything implementing [libdns](https://github.com/libdns) works — add the import and one case in `server/internal/tlsmgr/acme.go`.
-
-## Backups (Litestream)
-
-State lives in one SQLite file: `<data_dir>/furo.db` (users, token hashes, reserved names — active tunnels are memory-only). Stream it to S3-compatible storage with [Litestream](https://litestream.io):
-
-```yaml
-# /etc/litestream.yml
-dbs:
-  - path: /var/lib/furo/furo.db
-    replicas:
-      - url: s3://my-bucket/furo
-```
-
-```bash
-litestream replicate -config /etc/litestream.yml
-```
-
-Certificates in `<data_dir>/certs` re-issue themselves; backing them up just avoids a re-issuance burst after disaster recovery.
 
 ## Architecture
 

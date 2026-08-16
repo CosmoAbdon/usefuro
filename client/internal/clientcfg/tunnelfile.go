@@ -16,7 +16,7 @@ import (
 //	  api:
 //	    proto: http
 //	    port: 3003
-//	    name: api-orbium
+//	    name: custom-api
 //	  web:
 //	    proto: http
 //	    port: 3000        # no name → server-generated

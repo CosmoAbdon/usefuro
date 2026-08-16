@@ -6,7 +6,7 @@ import (
 )
 
 func TestValid(t *testing.T) {
-	valid := []string{"a", "api", "api-orbium", "a1", "x0-y9", strings.Repeat("a", 63)}
+	valid := []string{"a", "api", "custom-api", "a1", "x0-y9", strings.Repeat("a", 63)}
 	for _, s := range valid {
 		if !Valid(s) {
 			t.Errorf("Valid(%q) = false, want true", s)
