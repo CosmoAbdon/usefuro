@@ -139,7 +139,7 @@ WantedBy=multi-user.target
 <details>
 <summary><b>Observability (Prometheus + Grafana)</b></summary>
 
-Off by default. Enable with `metrics_port: 9091` in config.yml (or `--metrics-port 9091`); `0` disables. The endpoint is plain HTTP with no auth — bind-scope or firewall it (it should never be the public port).
+Off by default. Enable with `metrics_port: 9091` in config.yml (or `--metrics-port 9091`); `0` disables. Binds `127.0.0.1` by default (scrape from the same host or an ssh tunnel); set `metrics_bind: 0.0.0.0` for remote scraping and firewall the port — the endpoint is plain HTTP with no auth.
 
 ```yaml
 # prometheus scrape config

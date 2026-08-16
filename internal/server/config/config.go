@@ -26,8 +26,12 @@ type Config struct {
 	AdminToken  string `yaml:"admin_token,omitempty"` // supports ${ENV_VAR}; used by the admin SPA/API (M5)
 	DataDir     string `yaml:"data_dir"`
 	// MetricsPort exposes Prometheus /metrics on this port; 0 disables it.
-	// Plain HTTP with no auth — bind-scope or firewall it yourself.
+	// Plain HTTP with no auth.
 	MetricsPort int `yaml:"metrics_port,omitempty"`
+	// MetricsBind is the interface for /metrics. Defaults to 127.0.0.1
+	// (safe: scrape from the same host or an ssh tunnel); set 0.0.0.0 for
+	// remote scraping — then firewall the port yourself.
+	MetricsBind string `yaml:"metrics_bind,omitempty"`
 }
 
 func Default() Config {

@@ -214,7 +214,11 @@ func cmdServe(args []string) {
 	defer st.Close()
 
 	if cfg.MetricsPort > 0 {
-		ln, err := metrics.Start(fmt.Sprintf(":%d", cfg.MetricsPort))
+		bind := cfg.MetricsBind
+		if bind == "" {
+			bind = "127.0.0.1"
+		}
+		ln, err := metrics.Start(fmt.Sprintf("%s:%d", bind, cfg.MetricsPort))
 		if err != nil {
 			fatal(err)
 		}
