@@ -11,9 +11,10 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  furo http <port> [--name X] [--server addr] [--token T]
+  furo http <port> [--name X | -n X] [--server addr] [--token T]
 
-M1: login/start/status land in later milestones.`)
+Without --name the server assigns a random one.
+login/start/status land in later milestones.`)
 	os.Exit(2)
 }
 
@@ -31,9 +32,9 @@ func main() {
 
 func cmdHTTP(args []string) {
 	fs := flag.NewFlagSet("http", flag.ExitOnError)
-	name := fs.String("name", "", "tunnel name")
+	name := fs.String("name", "", "tunnel name (empty → server-generated)")
 	server := fs.String("server", "127.0.0.1:7835", "server control address")
-	token := fs.String("token", "dev", "auth token (M1 only)")
+	token := fs.String("token", "", "auth token (furo_...)")
 	fs.StringVar(name, "n", "", "tunnel name (shorthand)")
 
 	// Accept "furo http 3003 --flags" (port first, then flags).
@@ -43,11 +44,12 @@ func cmdHTTP(args []string) {
 	port := args[0]
 	fs.Parse(args[1:])
 
-	if *name == "" {
-		*name = "dev" // nanoID generation lands in M2
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if *token == "" {
+		log.Error("missing --token (furo login lands in a later milestone)")
+		os.Exit(1)
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	c := tunnel.New(tunnel.Config{
 		ServerAddr: *server,
 		Token:      *token,

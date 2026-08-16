@@ -1,46 +1,84 @@
 // Package tunnel implements the furo client side: the persistent yamux
-// session to the server and per-request data-stream handling (server opens a
-// stream per HTTP request; we pipe it byte-level to the local port).
+// session to the server, automatic reconnection with backoff + re-register,
+// and per-request data-stream handling (server opens a stream per HTTP
+// request; we pipe it byte-level to the local port).
 package tunnel
 
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
 	"github.com/cosmoabdon/furo/proto"
 )
 
-const clientVersion = "0.1.0-m1"
+const (
+	clientVersion = "0.1.0-m2"
+	maxBackoff    = 30 * time.Second
+)
 
 type Config struct {
 	ServerAddr string // control address, e.g. "127.0.0.1:7835"
 	Token      string
-	Name       string // tunnel name
+	Name       string // tunnel name; empty → server generates one
 	LocalAddr  string // e.g. "127.0.0.1:3003"
 	Log        *slog.Logger
 }
 
 type Client struct {
-	cfg Config
-	log *slog.Logger
+	cfg  Config
+	log  *slog.Logger
+	name string // assigned name (server echo), stable across reconnects
 }
+
+// errPermanent aborts the reconnect loop (bad token, name taken on first try).
+var errPermanent = errors.New("permanent")
 
 func New(cfg Config) *Client {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Client{cfg: cfg, log: cfg.Log}
+	return &Client{cfg: cfg, log: cfg.Log, name: cfg.Name}
 }
 
-// Run connects, authenticates, registers the tunnel and serves data streams
-// until the session ends. Reconnection with backoff lands in M2.
+// Run connects and serves; on session loss it reconnects with exponential
+// backoff (1s → 30s, jitter), re-authenticates and re-registers the tunnel
+// under the same name. Returns only on permanent errors.
 func (c *Client) Run() error {
+	backoff := time.Second
+	first := true
+	for {
+		start := time.Now()
+		err := c.connectOnce(first)
+		if errors.Is(err, errPermanent) {
+			return err
+		}
+		if first && err != nil && time.Since(start) < time.Second {
+			// Never got a session up — likely bad address; still retry, but say so.
+			c.log.Warn("initial connection failed", "err", err)
+		}
+		first = false
+		if time.Since(start) > time.Minute {
+			backoff = time.Second // session was healthy; start backoff over
+		}
+		sleep := backoff + time.Duration(rand.Int63n(int64(backoff/2+1)))
+		c.log.Info("reconnecting", "in", sleep, "err", err)
+		time.Sleep(sleep)
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func (c *Client) connectOnce(first bool) error {
 	conn, err := net.Dial("tcp", c.cfg.ServerAddr)
 	if err != nil {
 		return fmt.Errorf("dial server: %w", err)
@@ -67,21 +105,25 @@ func (c *Client) Run() error {
 		return fmt.Errorf("read auth reply: %w", err)
 	}
 	if msg.Type != proto.TypeAuthOK {
-		return fmt.Errorf("auth failed: %s", msg.Reason)
+		return fmt.Errorf("%w: auth failed: %s", errPermanent, msg.Reason)
 	}
-	c.log.Info("authenticated", "username", msg.Username)
 
-	enc.Encode(proto.Message{Type: proto.TypeRegister, Proto: "http", Name: c.cfg.Name, Local: c.cfg.LocalAddr})
+	enc.Encode(proto.Message{Type: proto.TypeRegister, Proto: "http", Name: c.name, Local: c.cfg.LocalAddr})
 	msg, err = readMsg(sc)
 	if err != nil {
 		return fmt.Errorf("read register reply: %w", err)
 	}
 	if msg.Type != proto.TypeRegistered {
+		if first {
+			return fmt.Errorf("%w: register failed: %s", errPermanent, msg.Reason)
+		}
+		// On reconnect the old session may not be cleaned up yet — retry.
 		return fmt.Errorf("register failed: %s", msg.Reason)
 	}
-	fmt.Printf("Forwarding  %s  →  %s\n", msg.URL, c.cfg.LocalAddr)
+	c.name = msg.Name // stable across reconnects, even when server-generated
+	fmt.Printf("Forwarding %s -> %s\n", msg.URL, c.cfg.LocalAddr)
 
-	// Keep draining the control stream (ping handling lands in M2).
+	// Control reader: answer pings.
 	go func() {
 		for {
 			m, err := readMsg(sc)

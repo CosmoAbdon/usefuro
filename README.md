@@ -10,7 +10,7 @@ furo http 3003 --name api-orbium
 
 ## Status
 
-Early development. Current milestone: **M1** — hardcoded end-to-end tunnel (no TLS, single user).
+Early development. Current milestone: **M2** — multiuser (SQLite, token auth, server-generated names, heartbeat, automatic reconnection with re-register). No public TLS yet (M3).
 
 ## Layout
 
@@ -22,20 +22,30 @@ web-server/      Admin SPA (React + Vite + Tailwind), embedded into furo-server
 web-inspector/   Inspector SPA (React + Vite + Tailwind), embedded into furo
 ```
 
-## Dev quickstart (M1)
+## Dev quickstart (M2)
 
 ```bash
+# create a user (prints the token once)
+go run ./server/cmd/furo-server user add alice
+
 # terminal 1 — server (control :7835, public HTTP :8080)
-go run ./server/cmd/furo-server
+go run ./server/cmd/furo-server serve
 
 # terminal 2 — something to expose
 python3 -m http.server 3000
 
-# terminal 3 — client
-go run ./client/cmd/furo http 3000 --name test
+# terminal 3 — client (token from user add; --name optional)
+go run ./client/cmd/furo http 3000 --name test --token furo_...
 
 # then
-curl -H 'Host: test.dev.localhost' http://127.0.0.1:8080/
+curl -H 'Host: test.alice.localhost' http://127.0.0.1:8080/
+```
+
+Admin CLI:
+
+```bash
+furo-server user  add <username> | ls | rm <username>
+furo-server token add <username> [--label X] | ls <username> | revoke <hash-prefix>
 ```
 
 Tests:

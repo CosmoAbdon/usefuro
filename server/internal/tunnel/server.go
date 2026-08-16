@@ -15,20 +15,25 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
 	"github.com/cosmoabdon/furo/proto"
+	"github.com/cosmoabdon/furo/server/internal/names"
 )
 
-// Config for M1: single hardcoded user/token, plain TCP (no TLS).
 type Config struct {
 	ControlAddr string // e.g. ":7835"
 	HTTPAddr    string // e.g. ":8080"
-	BaseDomain  string // e.g. "localhost"
-	AuthToken   string // M1: single shared token
-	Username    string // M1: single hardcoded username
-	Log         *slog.Logger
+	BaseDomain  string // e.g. "proxy.duto.sh"
+	// Authenticate resolves a client token to a username.
+	Authenticate func(token string) (string, error)
+	// Heartbeat: server pings every PingInterval; a session without a pong
+	// for PongTimeout is closed and its tunnels unregistered.
+	PingInterval time.Duration // default 30s
+	PongTimeout  time.Duration // default 90s
+	Log          *slog.Logger
 }
 
 type Server struct {
@@ -52,6 +57,12 @@ type tunnelEntry struct {
 func New(cfg Config) *Server {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
+	}
+	if cfg.PingInterval == 0 {
+		cfg.PingInterval = 30 * time.Second
+	}
+	if cfg.PongTimeout == 0 {
+		cfg.PongTimeout = 90 * time.Second
 	}
 	return &Server{cfg: cfg, log: cfg.Log, tunnels: make(map[string]*tunnelEntry)}
 }
@@ -106,6 +117,18 @@ func (s *Server) acceptLoop(ln net.Listener, handle func(net.Conn)) {
 
 // ---- control side ----
 
+// ctlWriter serializes control-stream writes (replies vs ping loop).
+type ctlWriter struct {
+	mu  sync.Mutex
+	enc *json.Encoder
+}
+
+func (w *ctlWriter) send(m proto.Message) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.enc.Encode(m)
+}
+
 func (s *Server) handleControlConn(conn net.Conn) {
 	defer conn.Close()
 	sess, err := yamux.Server(conn, nil)
@@ -119,21 +142,51 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	enc := json.NewEncoder(ctl)
+	w := &ctlWriter{enc: json.NewEncoder(ctl)}
 	sc := bufio.NewScanner(ctl)
 	sc.Buffer(make([]byte, 0, 64*1024), 64*1024)
 
 	// First message must be auth.
 	msg, err := readMsg(sc)
-	if err != nil || msg.Type != proto.TypeAuth || msg.Token != s.cfg.AuthToken {
-		enc.Encode(proto.Message{Type: proto.TypeAuthErr, Reason: "invalid_token"})
+	if err != nil || msg.Type != proto.TypeAuth {
+		w.send(proto.Message{Type: proto.TypeAuthErr, Reason: "invalid_token"})
 		return
 	}
-	username := s.cfg.Username
-	enc.Encode(proto.Message{Type: proto.TypeAuthOK, Username: username})
+	username, err := s.cfg.Authenticate(msg.Token)
+	if err != nil {
+		w.send(proto.Message{Type: proto.TypeAuthErr, Reason: "invalid_token"})
+		return
+	}
+	w.send(proto.Message{Type: proto.TypeAuthOK, Username: username})
 	s.log.Info("client authenticated", "username", username, "remote", conn.RemoteAddr())
 
 	defer s.unregisterSession(sess)
+
+	// Heartbeat.
+	var pongMu sync.Mutex
+	lastPong := time.Now()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		t := time.NewTicker(s.cfg.PingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				pongMu.Lock()
+				silent := time.Since(lastPong)
+				pongMu.Unlock()
+				if silent > s.cfg.PongTimeout {
+					s.log.Warn("heartbeat timeout, closing session", "username", username)
+					sess.Close()
+					return
+				}
+				w.send(proto.Message{Type: proto.TypePing, TS: time.Now().Unix()})
+			}
+		}
+	}()
 
 	for {
 		msg, err := readMsg(sc)
@@ -142,11 +195,13 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		}
 		switch msg.Type {
 		case proto.TypeRegister:
-			s.register(enc, sess, username, msg)
+			s.register(w, sess, username, msg)
 		case proto.TypeUnregister:
 			s.unregisterByID(msg.TunnelID)
 		case proto.TypePong:
-			// heartbeat tracking lands in M2
+			pongMu.Lock()
+			lastPong = time.Now()
+			pongMu.Unlock()
 		}
 	}
 }
@@ -163,21 +218,34 @@ func readMsg(sc *bufio.Scanner) (proto.Message, error) {
 	return msg, err
 }
 
-func (s *Server) register(enc *json.Encoder, sess *yamux.Session, username string, msg proto.Message) {
-	key := username + "/" + msg.Name
+func (s *Server) register(w *ctlWriter, sess *yamux.Session, username string, msg proto.Message) {
+	name := msg.Name
+	generated := name == ""
+	if !generated && !names.Valid(name) {
+		w.send(proto.Message{Type: proto.TypeRegisterErr, Name: name, Reason: "invalid_name"})
+		return
+	}
+
 	s.mu.Lock()
-	if _, taken := s.tunnels[key]; taken {
+	if generated {
+		for {
+			name = names.Generate()
+			if _, taken := s.tunnels[username+"/"+name]; !taken {
+				break
+			}
+		}
+	} else if _, taken := s.tunnels[username+"/"+name]; taken {
 		s.mu.Unlock()
-		enc.Encode(proto.Message{Type: proto.TypeRegisterErr, Name: msg.Name, Reason: "name_taken"})
+		w.send(proto.Message{Type: proto.TypeRegisterErr, Name: name, Reason: "name_taken"})
 		return
 	}
 	id := "t_" + randHex(8)
-	s.tunnels[key] = &tunnelEntry{id: id, username: username, name: msg.Name, sess: sess}
+	s.tunnels[username+"/"+name] = &tunnelEntry{id: id, username: username, name: name, sess: sess}
 	s.mu.Unlock()
 
-	url := fmt.Sprintf("http://%s.%s.%s", msg.Name, username, s.cfg.BaseDomain)
-	enc.Encode(proto.Message{Type: proto.TypeRegistered, TunnelID: id, URL: url})
-	s.log.Info("tunnel registered", "id", id, "name", msg.Name, "username", username)
+	url := fmt.Sprintf("http://%s.%s.%s", name, username, s.cfg.BaseDomain)
+	w.send(proto.Message{Type: proto.TypeRegistered, TunnelID: id, Name: name, URL: url})
+	s.log.Info("tunnel registered", "id", id, "name", name, "username", username)
 }
 
 func (s *Server) unregisterSession(sess *yamux.Session) {
@@ -285,30 +353,22 @@ func isUpgrade(req *http.Request) bool {
 }
 
 // lookup resolves the target tunnel from the request Host:
-// name.username.<base_domain>. M1 fallback: a single active tunnel matches
-// any Host, so local testing works without DNS.
+// name.username.<base_domain>, strict match on the in-memory registry.
 func (s *Server) lookup(host string) *tunnelEntry {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	suffix := "." + s.cfg.BaseDomain
+	if !strings.HasSuffix(host, suffix) {
+		return nil
+	}
+	labels := strings.Split(strings.TrimSuffix(host, suffix), ".")
+	if len(labels) != 2 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	suffix := "." + s.cfg.BaseDomain
-	if strings.HasSuffix(host, suffix) {
-		labels := strings.Split(strings.TrimSuffix(host, suffix), ".")
-		if len(labels) == 2 {
-			if t, ok := s.tunnels[labels[1]+"/"+labels[0]]; ok {
-				return t
-			}
-		}
-	}
-	if len(s.tunnels) == 1 {
-		for _, t := range s.tunnels {
-			return t
-		}
-	}
-	return nil
+	return s.tunnels[labels[1]+"/"+labels[0]]
 }
 
 func writeSimpleResponse(conn net.Conn, status int, body string) {

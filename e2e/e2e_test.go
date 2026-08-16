@@ -1,11 +1,13 @@
-// Package e2e builds the real furo-server and furo binaries, wires them to a
-// local test service and proves the full path: external request → public
-// listener → yamux data stream → local service → response. Includes a raw
-// WebSocket-style upgrade test (byte-level duplex after 101).
+// Package e2e builds the real furo-server and furo binaries, wires them to
+// local test services and proves the full path: external request → public
+// listener → yamux data stream → local service → response. Covers multiuser
+// routing, WebSocket-style upgrades, reconnection with re-register and
+// server-generated tunnel names.
 package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +16,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,7 +50,8 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// freePort grabs an ephemeral port and releases it for the process under test.
+// ---- helpers ----
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -57,50 +62,106 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func startProc(t *testing.T, bin string, args ...string) {
+type proc struct {
+	cmd    *exec.Cmd
+	stdout *lockedBuffer
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func startProc(t *testing.T, bin string, args ...string) *proc {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Stdout = os.Stderr
+	out := &lockedBuffer{}
+	cmd.Stdout = io.MultiWriter(out, os.Stderr)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", bin, err)
 	}
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-	})
+	p := &proc{cmd: cmd, stdout: out}
+	t.Cleanup(func() { p.kill() })
+	return p
+}
+
+func (p *proc) kill() {
+	if p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+		p.cmd.Wait()
+	}
+}
+
+// userAdd runs `furo-server user add` and returns the printed token.
+func userAdd(t *testing.T, dataDir, username string) string {
+	t.Helper()
+	out, err := exec.Command(serverBin, "user", "add", username, "--data-dir", dataDir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("user add: %v\n%s", err, out)
+	}
+	m := regexp.MustCompile(`token: (furo_\S+)`).FindSubmatch(out)
+	if m == nil {
+		t.Fatalf("no token in output:\n%s", out)
+	}
+	return string(m[1])
+}
+
+func startServer(t *testing.T, dataDir string, controlPort, httpPort int) *proc {
+	t.Helper()
+	return startProc(t, serverBin, "serve",
+		"--control", fmt.Sprintf("127.0.0.1:%d", controlPort),
+		"--http", fmt.Sprintf("127.0.0.1:%d", httpPort),
+		"--domain", "localhost",
+		"--data-dir", dataDir)
+}
+
+func get(url, host string) (int, string, error) {
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Host = host
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body), nil
 }
 
 func waitHTTP(t *testing.T, url, host, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	var lastErr error
+	deadline := time.Now().Add(15 * time.Second)
+	var last string
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest("GET", url, nil)
-		req.Host = host
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == 200 && strings.Contains(string(body), want) {
-				return
-			}
-			lastErr = fmt.Errorf("status %d body %q", resp.StatusCode, body)
-		} else {
-			lastErr = err
+		status, body, err := get(url, host)
+		if err == nil && status == 200 && strings.Contains(body, want) {
+			return
 		}
+		last = fmt.Sprintf("status=%d body=%q err=%v", status, body, err)
 		time.Sleep(150 * time.Millisecond)
 	}
-	t.Fatalf("tunnel never came up: %v", lastErr)
+	t.Fatalf("tunnel never came up (%s @ %s): %s", host, url, last)
 }
 
-// localService: "/" answers hello; "/ws" hijacks, answers 101 and echoes bytes.
-func localService(t *testing.T) *httptest.Server {
+// localService: "/" identifies itself; "/ws" hijacks, answers 101, echoes.
+func localService(t *testing.T, id string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "hello from local (fwd-for=%s fwd-host=%s)",
-			r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Forwarded-Host"))
+		fmt.Fprintf(w, "hello from %s (fwd-for=%s fwd-host=%s)",
+			id, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Forwarded-Host"))
 	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -129,43 +190,59 @@ func localService(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func TestEndToEnd(t *testing.T) {
-	local := localService(t)
-	localPort := strings.TrimPrefix(local.URL, "http://127.0.0.1:")
+func localPort(srv *httptest.Server) string {
+	return strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
+}
 
-	controlPort := freePort(t)
-	httpPort := freePort(t)
+// ---- tests ----
 
-	startProc(t, serverBin,
-		"--control", fmt.Sprintf("127.0.0.1:%d", controlPort),
-		"--http", fmt.Sprintf("127.0.0.1:%d", httpPort),
-		"--domain", "localhost")
+func TestMultiUserRouting(t *testing.T) {
+	dataDir := t.TempDir()
+	aliceToken := userAdd(t, dataDir, "alice")
+	bobToken := userAdd(t, dataDir, "bob")
+
+	controlPort, httpPort := freePort(t), freePort(t)
+	startServer(t, dataDir, controlPort, httpPort)
 	time.Sleep(200 * time.Millisecond)
 
-	startProc(t, clientBin, "http", localPort,
-		"--name", "test",
-		"--server", fmt.Sprintf("127.0.0.1:%d", controlPort))
+	aliceSvc := localService(t, "alice-svc")
+	bobSvc := localService(t, "bob-svc")
+	controlAddr := fmt.Sprintf("127.0.0.1:%d", controlPort)
+	startProc(t, clientBin, "http", localPort(aliceSvc), "--name", "web", "--server", controlAddr, "--token", aliceToken)
+	startProc(t, clientBin, "http", localPort(bobSvc), "--name", "web", "--server", controlAddr, "--token", bobToken)
 
 	publicURL := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
-	waitHTTP(t, publicURL, "test.dev.localhost", "hello from local")
+	waitHTTP(t, publicURL, "web.alice.localhost", "hello from alice-svc")
+	waitHTTP(t, publicURL, "web.bob.localhost", "hello from bob-svc")
 
-	t.Run("http_proxy_headers", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", publicURL, nil)
-		req.Host = "test.dev.localhost"
-		resp, err := http.DefaultClient.Do(req)
+	t.Run("same_name_different_users_route_apart", func(t *testing.T) {
+		_, body, err := get(publicURL, "web.alice.localhost")
+		if err != nil || !strings.Contains(body, "alice-svc") {
+			t.Fatalf("alice routing: %q %v", body, err)
+		}
+		_, body, err = get(publicURL, "web.bob.localhost")
+		if err != nil || !strings.Contains(body, "bob-svc") {
+			t.Fatalf("bob routing: %q %v", body, err)
+		}
+	})
+
+	t.Run("unknown_tunnel_404", func(t *testing.T) {
+		status, body, err := get(publicURL, "nope.alice.localhost")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d", resp.StatusCode)
+		if status != 404 || !strings.Contains(body, "tunnel offline") {
+			t.Fatalf("got %d %q, want 404 tunnel offline", status, body)
 		}
-		if !strings.Contains(string(body), "fwd-for=127.0.0.1") {
-			t.Errorf("missing X-Forwarded-For, body: %s", body)
+	})
+
+	t.Run("unknown_user_404", func(t *testing.T) {
+		status, _, err := get(publicURL, "web.ghost.localhost")
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "fwd-host=test.dev.localhost") {
-			t.Errorf("missing X-Forwarded-Host, body: %s", body)
+		if status != 404 {
+			t.Fatalf("got %d, want 404", status)
 		}
 	})
 
@@ -177,7 +254,7 @@ func TestEndToEnd(t *testing.T) {
 		defer conn.Close()
 		conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-		fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: test.dev.localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: web.alice.localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
 		br := bufio.NewReader(conn)
 		status, err := br.ReadString('\n')
 		if err != nil {
@@ -186,8 +263,7 @@ func TestEndToEnd(t *testing.T) {
 		if !strings.Contains(status, "101") {
 			t.Fatalf("expected 101, got %q", status)
 		}
-		// drain response headers
-		for {
+		for { // drain response headers
 			line, err := br.ReadString('\n')
 			if err != nil {
 				t.Fatal(err)
@@ -196,7 +272,6 @@ func TestEndToEnd(t *testing.T) {
 				break
 			}
 		}
-		// duplex echo, multiple round trips over the same upgraded conn
 		for i := 0; i < 3; i++ {
 			msg := fmt.Sprintf("ping-%d\n", i)
 			if _, err := conn.Write([]byte(msg)); err != nil {
@@ -212,12 +287,74 @@ func TestEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown_host_offline_404", func(t *testing.T) {
-		// Second registered tunnel would defeat the single-tunnel fallback;
-		// with one tunnel up, any Host matches (M1 behavior). So test the
-		// explicit-label miss path only when labels parse but don't match —
-		// covered properly in M2 with multiuser routing. Here: bad request
-		// to a stopped server port must 404 once no tunnels... skip until M2.
-		t.Skip("strict Host-miss 404 depends on M2 multiuser routing")
+	t.Run("revoked_token_rejected", func(t *testing.T) {
+		out, err := exec.Command(serverBin, "token", "ls", "alice", "--data-dir", dataDir).CombinedOutput()
+		if err != nil {
+			t.Fatalf("token ls: %v\n%s", err, out)
+		}
+		prefix := strings.Fields(string(out))[0]
+		if out, err := exec.Command(serverBin, "token", "revoke", prefix, "--data-dir", dataDir).CombinedOutput(); err != nil {
+			t.Fatalf("token revoke: %v\n%s", err, out)
+		}
+		// New session with the revoked token must fail fast (auth_err → exit 1).
+		cmd := exec.Command(clientBin, "http", localPort(aliceSvc), "--server", controlAddr, "--token", aliceToken)
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("client with revoked token succeeded:\n%s", out)
+		}
+		if !strings.Contains(string(out), "auth failed") {
+			t.Fatalf("expected auth failure, got:\n%s", out)
+		}
 	})
+}
+
+func TestReconnectReregisters(t *testing.T) {
+	dataDir := t.TempDir()
+	token := userAdd(t, dataDir, "carol")
+	controlPort, httpPort := freePort(t), freePort(t)
+
+	srv := startServer(t, dataDir, controlPort, httpPort)
+	time.Sleep(200 * time.Millisecond)
+
+	svc := localService(t, "carol-svc")
+	startProc(t, clientBin, "http", localPort(svc), "--name", "api",
+		"--server", fmt.Sprintf("127.0.0.1:%d", controlPort), "--token", token)
+
+	publicURL := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
+	waitHTTP(t, publicURL, "api.carol.localhost", "hello from carol-svc")
+
+	// Kill the server; client must reconnect and re-register on its own.
+	srv.kill()
+	startServer(t, dataDir, controlPort, httpPort)
+	waitHTTP(t, publicURL, "api.carol.localhost", "hello from carol-svc")
+}
+
+func TestServerGeneratedName(t *testing.T) {
+	dataDir := t.TempDir()
+	token := userAdd(t, dataDir, "dave")
+	controlPort, httpPort := freePort(t), freePort(t)
+	startServer(t, dataDir, controlPort, httpPort)
+	time.Sleep(200 * time.Millisecond)
+
+	svc := localService(t, "dave-svc")
+	client := startProc(t, clientBin, "http", localPort(svc),
+		"--server", fmt.Sprintf("127.0.0.1:%d", controlPort), "--token", token)
+
+	// Client prints "Forwarding http://<name>.dave.localhost -> ..." — parse it.
+	re := regexp.MustCompile(`Forwarding http://([a-z][a-z0-9]{7})\.dave\.localhost`)
+	var name string
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if m := re.FindStringSubmatch(client.stdout.String()); m != nil {
+			name = m[1]
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if name == "" {
+		t.Fatalf("no generated-name URL printed, stdout:\n%s", client.stdout.String())
+	}
+
+	publicURL := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
+	waitHTTP(t, publicURL, name+".dave.localhost", "hello from dave-svc")
 }
