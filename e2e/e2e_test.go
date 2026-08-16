@@ -87,6 +87,8 @@ func (b *lockedBuffer) String() string {
 func startProc(t *testing.T, bin string, args ...string) *proc {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
+	// Isolated HOME so ~/.config/furo of the developer never leaks in.
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
 	out := &lockedBuffer{}
 	cmd.Stdout = io.MultiWriter(out, os.Stderr)
 	cmd.Stderr = os.Stderr
@@ -119,13 +121,20 @@ func userAdd(t *testing.T, dataDir, username string) string {
 	return string(m[1])
 }
 
-func startServer(t *testing.T, dataDir string, controlPort, httpPort int) *proc {
+func startServer(t *testing.T, dataDir string, controlPort, httpPort int, extra ...string) *proc {
 	t.Helper()
-	return startProc(t, serverBin, "serve",
+	args := append([]string{"serve",
 		"--control", fmt.Sprintf("127.0.0.1:%d", controlPort),
 		"--http", fmt.Sprintf("127.0.0.1:%d", httpPort),
 		"--domain", "localhost",
-		"--data-dir", dataDir)
+		"--data-dir", dataDir}, extra...)
+	return startProc(t, serverBin, args...)
+}
+
+func startClient(t *testing.T, port, controlAddr, token string, extra ...string) *proc {
+	t.Helper()
+	args := append([]string{"http", port, "--server", controlAddr, "--token", token}, extra...)
+	return startProc(t, clientBin, args...)
 }
 
 func get(url, host string) (int, string, error) {
@@ -160,8 +169,8 @@ func localService(t *testing.T, id string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "hello from %s (fwd-for=%s fwd-host=%s)",
-			id, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Forwarded-Host"))
+		fmt.Fprintf(w, "hello from %s (fwd-for=%s fwd-host=%s fwd-proto=%s)",
+			id, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"))
 	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -208,8 +217,8 @@ func TestMultiUserRouting(t *testing.T) {
 	aliceSvc := localService(t, "alice-svc")
 	bobSvc := localService(t, "bob-svc")
 	controlAddr := fmt.Sprintf("127.0.0.1:%d", controlPort)
-	startProc(t, clientBin, "http", localPort(aliceSvc), "--name", "web", "--server", controlAddr, "--token", aliceToken)
-	startProc(t, clientBin, "http", localPort(bobSvc), "--name", "web", "--server", controlAddr, "--token", bobToken)
+	startClient(t, localPort(aliceSvc), controlAddr, aliceToken, "--name", "web", "--plaintext")
+	startClient(t, localPort(bobSvc), controlAddr, bobToken, "--name", "web", "--plaintext")
 
 	publicURL := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
 	waitHTTP(t, publicURL, "web.alice.localhost", "hello from alice-svc")
@@ -297,7 +306,8 @@ func TestMultiUserRouting(t *testing.T) {
 			t.Fatalf("token revoke: %v\n%s", err, out)
 		}
 		// New session with the revoked token must fail fast (auth_err → exit 1).
-		cmd := exec.Command(clientBin, "http", localPort(aliceSvc), "--server", controlAddr, "--token", aliceToken)
+		cmd := exec.Command(clientBin, "http", localPort(aliceSvc), "--server", controlAddr, "--token", aliceToken, "--plaintext")
+		cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
 		out, err = cmd.CombinedOutput()
 		if err == nil {
 			t.Fatalf("client with revoked token succeeded:\n%s", out)
@@ -317,8 +327,7 @@ func TestReconnectReregisters(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	svc := localService(t, "carol-svc")
-	startProc(t, clientBin, "http", localPort(svc), "--name", "api",
-		"--server", fmt.Sprintf("127.0.0.1:%d", controlPort), "--token", token)
+	startClient(t, localPort(svc), fmt.Sprintf("127.0.0.1:%d", controlPort), token, "--name", "api", "--plaintext")
 
 	publicURL := fmt.Sprintf("http://127.0.0.1:%d/", httpPort)
 	waitHTTP(t, publicURL, "api.carol.localhost", "hello from carol-svc")
@@ -337,8 +346,7 @@ func TestServerGeneratedName(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	svc := localService(t, "dave-svc")
-	client := startProc(t, clientBin, "http", localPort(svc),
-		"--server", fmt.Sprintf("127.0.0.1:%d", controlPort), "--token", token)
+	client := startClient(t, localPort(svc), fmt.Sprintf("127.0.0.1:%d", controlPort), token, "--plaintext")
 
 	// Client prints "Forwarding http://<name>.dave.localhost -> ..." — parse it.
 	re := regexp.MustCompile(`Forwarding http://([a-z][a-z0-9]{7})\.dave\.localhost`)

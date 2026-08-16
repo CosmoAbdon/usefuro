@@ -6,6 +6,7 @@ package tunnel
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,10 @@ type Config struct {
 	ControlAddr string // e.g. ":7835"
 	HTTPAddr    string // e.g. ":8080"
 	BaseDomain  string // e.g. "proxy.duto.sh"
+	// TLS for each listener; nil serves plaintext (dev). With TLS the
+	// public scheme becomes https.
+	ControlTLS *tls.Config
+	PublicTLS  *tls.Config
 	// Authenticate resolves a client token to a username.
 	Authenticate func(token string) (string, error)
 	// Heartbeat: server pings every PingInterval; a session without a pong
@@ -78,6 +83,12 @@ func (s *Server) Start() error {
 	if err != nil {
 		s.controlLn.Close()
 		return fmt.Errorf("http listen: %w", err)
+	}
+	if s.cfg.ControlTLS != nil {
+		s.controlLn = tls.NewListener(s.controlLn, s.cfg.ControlTLS)
+	}
+	if s.cfg.PublicTLS != nil {
+		s.httpLn = tls.NewListener(s.httpLn, s.cfg.PublicTLS)
 	}
 	s.log.Info("furo-server listening",
 		"control", s.controlLn.Addr().String(),
@@ -243,7 +254,7 @@ func (s *Server) register(w *ctlWriter, sess *yamux.Session, username string, ms
 	s.tunnels[username+"/"+name] = &tunnelEntry{id: id, username: username, name: name, sess: sess}
 	s.mu.Unlock()
 
-	url := fmt.Sprintf("http://%s.%s.%s", name, username, s.cfg.BaseDomain)
+	url := fmt.Sprintf("%s://%s.%s.%s", s.scheme(), name, username, s.cfg.BaseDomain)
 	w.send(proto.Message{Type: proto.TypeRegistered, TunnelID: id, Name: name, URL: url})
 	s.log.Info("tunnel registered", "id", id, "name", name, "username", username)
 }
@@ -300,7 +311,7 @@ func (s *Server) handlePublicConn(conn net.Conn) {
 
 		clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 		req.Header.Set("X-Forwarded-For", clientIP)
-		req.Header.Set("X-Forwarded-Proto", "http") // becomes https in M3
+		req.Header.Set("X-Forwarded-Proto", s.scheme())
 		req.Header.Set("X-Forwarded-Host", req.Host)
 
 		if isUpgrade(req) {
@@ -345,6 +356,13 @@ func (s *Server) proxyUpgrade(conn net.Conn, br *bufio.Reader, stream *yamux.Str
 	<-done
 	// Closing both unblocks the remaining copy.
 	conn.Close()
+}
+
+func (s *Server) scheme() string {
+	if s.cfg.PublicTLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func isUpgrade(req *http.Request) bool {

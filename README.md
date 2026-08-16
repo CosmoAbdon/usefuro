@@ -10,7 +10,7 @@ furo http 3003 --name api-orbium
 
 ## Status
 
-Early development. Current milestone: **M2** — multiuser (SQLite, token auth, server-generated names, heartbeat, automatic reconnection with re-register). No public TLS yet (M3).
+Early development. Current milestone: **M3** — real TLS: Let's Encrypt wildcards per user (DNS-01 via certmagic + libdns), TLS on the control and public listeners, `furo-server init` wizard, `furo login`.
 
 ## Layout
 
@@ -22,24 +22,38 @@ web-server/      Admin SPA (React + Vite + Tailwind), embedded into furo-server
 web-inspector/   Inspector SPA (React + Vite + Tailwind), embedded into furo
 ```
 
-## Dev quickstart (M2)
+## Server quickstart (production)
+
+Requirements: a domain with a wildcard record (`*.tunnel.example.com`) pointing
+at the server, and a DNS provider API token (Cloudflare supported) for
+Let's Encrypt DNS-01.
 
 ```bash
-# create a user (prints the token once)
+furo-server init                    # wizard → config.yml (validates wildcard DNS)
+export FURO_DNS_TOKEN=...
+furo-server user add alice --config config.yml   # prints token once + issues *.alice.<base>
+furo-server serve --config config.yml
+```
+
+## Client quickstart
+
+```bash
+furo login furo_...  --server control.tunnel.example.com:7835
+furo http 3000 --name web
+# → https://web.alice.tunnel.example.com → localhost:3000
+```
+
+## Dev mode (no domain, no TLS)
+
+```bash
 go run ./server/cmd/furo-server user add alice
-
-# terminal 1 — server (control :7835, public HTTP :8080)
-go run ./server/cmd/furo-server serve
-
-# terminal 2 — something to expose
-python3 -m http.server 3000
-
-# terminal 3 — client (token from user add; --name optional)
-go run ./client/cmd/furo http 3000 --name test --token furo_...
-
-# then
+go run ./server/cmd/furo-server serve            # tls off by default without config.yml
+go run ./client/cmd/furo http 3000 --name test --token furo_... --plaintext
 curl -H 'Host: test.alice.localhost' http://127.0.0.1:8080/
 ```
+
+`--tls self-signed` gives real TLS locally: the CA lands in `data/certs/ca.pem`,
+point the client at it with `--ca`.
 
 Admin CLI:
 

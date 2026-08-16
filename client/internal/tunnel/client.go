@@ -6,6 +6,8 @@ package tunnel
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net"
+	"os"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -26,27 +29,53 @@ const (
 )
 
 type Config struct {
-	ServerAddr string // control address, e.g. "127.0.0.1:7835"
+	ServerAddr string // control address, e.g. "control.proxy.duto.sh:7835"
 	Token      string
 	Name       string // tunnel name; empty → server generates one
 	LocalAddr  string // e.g. "127.0.0.1:3003"
+	Plaintext  bool   // no TLS on the control connection (dev servers)
+	CAFile     string // extra CA bundle (self-signed servers)
+	Insecure   bool   // skip TLS verification
 	Log        *slog.Logger
 }
 
 type Client struct {
-	cfg  Config
-	log  *slog.Logger
-	name string // assigned name (server echo), stable across reconnects
+	cfg    Config
+	log    *slog.Logger
+	name   string // assigned name (server echo), stable across reconnects
+	tlsCfg *tls.Config
 }
 
 // errPermanent aborts the reconnect loop (bad token, name taken on first try).
 var errPermanent = errors.New("permanent")
 
-func New(cfg Config) *Client {
+func New(cfg Config) (*Client, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Client{cfg: cfg, log: cfg.Log, name: cfg.Name}
+	c := &Client{cfg: cfg, log: cfg.Log, name: cfg.Name}
+	if !cfg.Plaintext {
+		c.tlsCfg = &tls.Config{InsecureSkipVerify: cfg.Insecure, MinVersion: tls.VersionTLS12}
+		if cfg.CAFile != "" {
+			pem, err := os.ReadFile(cfg.CAFile)
+			if err != nil {
+				return nil, fmt.Errorf("read ca file: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("no certificates in %s", cfg.CAFile)
+			}
+			c.tlsCfg.RootCAs = pool
+		}
+	}
+	return c, nil
+}
+
+func (c *Client) dial() (net.Conn, error) {
+	if c.tlsCfg == nil {
+		return net.Dial("tcp", c.cfg.ServerAddr)
+	}
+	return tls.Dial("tcp", c.cfg.ServerAddr, c.tlsCfg)
 }
 
 // Run connects and serves; on session loss it reconnects with exponential
@@ -79,7 +108,7 @@ func (c *Client) Run() error {
 }
 
 func (c *Client) connectOnce(first bool) error {
-	conn, err := net.Dial("tcp", c.cfg.ServerAddr)
+	conn, err := c.dial()
 	if err != nil {
 		return fmt.Errorf("dial server: %w", err)
 	}
