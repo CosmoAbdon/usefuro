@@ -25,6 +25,9 @@ type Config struct {
 	HTTPPort    int    `yaml:"http_port"`
 	AdminToken  string `yaml:"admin_token,omitempty"` // supports ${ENV_VAR}; used by the admin SPA/API (M5)
 	DataDir     string `yaml:"data_dir"`
+	// MetricsPort exposes Prometheus /metrics on this port; 0 disables it.
+	// Plain HTTP with no auth — bind-scope or firewall it yourself.
+	MetricsPort int `yaml:"metrics_port,omitempty"`
 }
 
 func Default() Config {
