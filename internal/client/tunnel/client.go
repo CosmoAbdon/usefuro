@@ -79,10 +79,21 @@ type Client struct {
 // errPermanent aborts the reconnect loop (bad token, name taken on first try).
 var errPermanent = errors.New("permanent")
 
+// defaultControlPort is assumed when --server has no port.
+const defaultControlPort = "7835"
+
+func withDefaultPort(addr string) string {
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr
+	}
+	return net.JoinHostPort(addr, defaultControlPort)
+}
+
 func New(cfg Config) (*Client, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	cfg.ServerAddr = withDefaultPort(cfg.ServerAddr)
 	if len(cfg.Tunnels) == 0 {
 		return nil, errors.New("no tunnels configured")
 	}
