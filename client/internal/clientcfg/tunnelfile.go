@@ -56,8 +56,9 @@ func ParseTunnelFile(b []byte) ([]tunnel.TunnelSpec, error) {
 			return nil, fmt.Errorf("tunnel %q: invalid port %d", k, e.Port)
 		}
 		specs = append(specs, tunnel.TunnelSpec{
-			Name:      e.Name,
-			LocalAddr: fmt.Sprintf("127.0.0.1:%d", e.Port),
+			Name: e.Name,
+			// "localhost" so IPv6-only local servers (Node 17+) also work.
+			LocalAddr: fmt.Sprintf("localhost:%d", e.Port),
 		})
 	}
 	return specs, nil

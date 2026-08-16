@@ -22,10 +22,10 @@ tunnels:
 		t.Fatalf("specs = %d, want 2", len(specs))
 	}
 	// sorted by key: api, web
-	if specs[0].Name != "api-orbium" || specs[0].LocalAddr != "127.0.0.1:3003" {
+	if specs[0].Name != "api-orbium" || specs[0].LocalAddr != "localhost:3003" {
 		t.Fatalf("api spec: %+v", specs[0])
 	}
-	if specs[1].Name != "" || specs[1].LocalAddr != "127.0.0.1:3000" {
+	if specs[1].Name != "" || specs[1].LocalAddr != "localhost:3000" {
 		t.Fatalf("web spec: %+v", specs[1])
 	}
 }
