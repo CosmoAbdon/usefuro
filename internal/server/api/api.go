@@ -170,7 +170,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Label string `json:"label"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // label is optional; empty body is fine
 	token, err := s.store.CreateToken(r.PathValue("username"), body.Label)
 	if err != nil {
 		writeErr(w, err)

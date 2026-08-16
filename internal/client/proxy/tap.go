@@ -89,6 +89,7 @@ func (t *Tap) Finish() {
 			e.Status = resp.StatusCode
 			e.RespHeaders = resp.Header
 			e.RespBody, e.RespTruncated = readCappedBody(resp.Body, t.resp.Truncated())
+			resp.Body.Close()
 		}
 	}
 	t.ring.Add(e)
