@@ -8,7 +8,7 @@ before:
 
 builds:
   - id: furo
-    main: ./client/cmd/furo
+    main: ./cmd/furo
     binary: furo
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
@@ -19,7 +19,7 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
   - id: furo-server
-    main: ./server/cmd/furo-server
+    main: ./cmd/furo-server
     binary: furo-server
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
